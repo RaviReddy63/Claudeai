@@ -14,6 +14,11 @@ class PortfolioManager:
         
         self.setup_widgets()
         self.setup_navigation()
+        
+        # Add observers
+        self.au_dropdown.observe(self.on_au_change, names='value')
+        self.customer_type.observe(self.on_type_change, names='value')
+        
         self.display_current_step()
 
     def setup_widgets(self):
@@ -56,6 +61,18 @@ class PortfolioManager:
         self.customer_stats = widgets.HTML()
         self.portfolio_table = widgets.HTML()
         self.initialize_portfolio_inputs()
+
+    def on_au_change(self, change):
+        if self.step == 3:
+            self.update_customer_stats()
+        elif self.step == 5:
+            self.update_portfolio_table()
+
+    def on_type_change(self, change):
+        if self.step == 3:
+            self.update_customer_stats()
+        elif self.step == 5:
+            self.update_portfolio_table()
 
     def initialize_portfolio_inputs(self):
         self.portfolio_inputs = {}
@@ -145,7 +162,7 @@ class PortfolioManager:
                     portfolio_stats['Portfolio_Code'] == portfolio
                 ]['Customer_ID'].iloc[0])
                 self.portfolio_inputs[portfolio].max = customer_count
-        
+                
         table_html = """
         <div style='padding: 10px; background-color: #f5f5f5; border-radius: 5px;'>
         <table style='width: 100%; border-collapse: collapse;'>
@@ -205,11 +222,19 @@ class PortfolioManager:
         if self.step < 6:
             self.step += 1
             self.display_current_step()
+            if self.step == 3:
+                self.update_customer_stats()
+            elif self.step == 5:
+                self.update_portfolio_table()
 
     def prev_step(self, b):
         if self.step > 1:
             self.step -= 1
             self.display_current_step()
+            if self.step == 3:
+                self.update_customer_stats()
+            elif self.step == 5:
+                self.update_portfolio_table()
 
     def display_current_step(self):
         clear_output(wait=True)
@@ -250,18 +275,13 @@ class PortfolioManager:
             ])
         }
         
-        if self.step == 3:
-            self.update_customer_stats()
-        elif self.step == 5:
-            self.update_portfolio_table()
-            
         display(steps[self.step])
 
-# Example data and usage:
+# Example data
 au_data = [
-    [1, 40.7128, -74.0060],  # New York
-    [2, 41.8781, -87.6298],  # Chicago
-    [3, 34.0522, -118.2437]  # Los Angeles
+    [1, 40.7128, -74.0060],
+    [2, 41.8781, -87.6298],
+    [3, 34.0522, -118.2437]
 ]
 
 banker_data = [
@@ -270,7 +290,6 @@ banker_data = [
     ['B3', 2, 'P3']
 ]
 
-# Update the example customer_data:
 customer_data = [
     ['C1', 1, 40.7128, -74.0060, 'P1', 100000, 500000, 1000000],
     ['C2', 1, 40.7300, -74.0200, None, 200000, 600000, 1200000],
