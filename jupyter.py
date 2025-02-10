@@ -13,11 +13,11 @@ class PortfolioManager:
         ])
         
         self.setup_widgets()
-        self.setup_navigation()
+        self.initialize_portfolio_inputs()
         
-        # Add observers
-        self.au_dropdown.observe(self.on_au_change, names='value')
-        self.customer_type.observe(self.on_type_change, names='value')
+        # Add widget observers
+        self.au_dropdown.observe(self.on_widget_change, names='value')
+        self.customer_type.observe(self.on_widget_change, names='value')
         
         self.display_current_step()
 
@@ -60,19 +60,6 @@ class PortfolioManager:
         
         self.customer_stats = widgets.HTML()
         self.portfolio_table = widgets.HTML()
-        self.initialize_portfolio_inputs()
-
-    def on_au_change(self, change):
-        if self.step == 3:
-            self.update_customer_stats()
-        elif self.step == 5:
-            self.update_portfolio_table()
-
-    def on_type_change(self, change):
-        if self.step == 3:
-            self.update_customer_stats()
-        elif self.step == 5:
-            self.update_portfolio_table()
 
     def initialize_portfolio_inputs(self):
         self.portfolio_inputs = {}
@@ -80,29 +67,16 @@ class PortfolioManager:
         for portfolio in portfolio_codes:
             if pd.notna(portfolio):
                 self.portfolio_inputs[portfolio] = widgets.IntSlider(
-                    min=0,
-                    max=100,
+                    min=0, max=100,
                     description=f'Count:',
                     layout=widgets.Layout(width='200px')
                 )
 
-    def setup_navigation(self):
-        self.next_button = widgets.Button(
-            description='Next',
-            layout=widgets.Layout(width='100px')
-        )
-        self.prev_button = widgets.Button(
-            description='Previous',
-            layout=widgets.Layout(width='100px')
-        )
-        self.finish_button = widgets.Button(
-            description='Create Portfolio',
-            layout=widgets.Layout(width='150px')
-        )
-        
-        self.next_button.on_click(self.next_step)
-        self.prev_button.on_click(self.prev_step)
-        self.finish_button.on_click(self.save_portfolio)
+    def on_widget_change(self, change):
+        if self.step == 3:
+            self.update_customer_stats()
+        elif self.step == 5:
+            self.update_portfolio_table()
 
     def filter_customers(self):
         if not self.au_dropdown.value:
@@ -162,7 +136,11 @@ class PortfolioManager:
                     portfolio_stats['Portfolio_Code'] == portfolio
                 ]['Customer_ID'].iloc[0])
                 self.portfolio_inputs[portfolio].max = customer_count
-                
+        
+        table_html = self.create_portfolio_table(portfolio_stats)
+        self.portfolio_table.value = table_html
+
+    def create_portfolio_table(self, portfolio_stats):
         table_html = """
         <div style='padding: 10px; background-color: #f5f5f5; border-radius: 5px;'>
         <table style='width: 100%; border-collapse: collapse;'>
@@ -195,7 +173,7 @@ class PortfolioManager:
             """
         
         table_html += "</table></div>"
-        self.portfolio_table.value = table_html
+        return table_html
 
     def save_portfolio(self, b):
         filtered_customers = self.filter_customers()
@@ -239,42 +217,55 @@ class PortfolioManager:
     def display_current_step(self):
         clear_output(wait=True)
         
+        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
+        prev_btn = widgets.Button(description='Previous', layout=widgets.Layout(width='100px'))
+        finish_btn = widgets.Button(description='Create Portfolio', layout=widgets.Layout(width='150px'))
+        
+        next_btn.on_click(lambda b: self.next_step(b))
+        prev_btn.on_click(lambda b: self.prev_step(b))
+        finish_btn.on_click(lambda b: self.save_portfolio(b))
+        
         steps = {
             1: widgets.VBox([
                 widgets.HTML('<h3>Step 1: Select Administrative Unit</h3>'),
                 self.au_dropdown,
-                self.next_button
+                next_btn
             ]),
             2: widgets.VBox([
                 widgets.HTML('<h3>Step 2: Set Distance Range</h3>'),
                 self.range_slider,
-                widgets.HBox([self.prev_button, self.next_button])
+                widgets.HBox([prev_btn, next_btn])
             ]),
             3: widgets.VBox([
                 widgets.HTML('<h3>Step 3: Customer Type & Statistics</h3>'),
                 self.customer_type,
                 self.customer_stats,
-                widgets.HBox([self.prev_button, self.next_button])
+                widgets.HBox([prev_btn, next_btn])
             ]),
             4: widgets.VBox([
                 widgets.HTML('<h3>Step 4: Set Minimum Values</h3>'),
                 self.revenue_slider,
                 self.deposit_slider,
                 self.sales_slider,
-                widgets.HBox([self.prev_button, self.next_button])
+                widgets.HBox([prev_btn, next_btn])
             ]),
             5: widgets.VBox([
                 widgets.HTML('<h3>Step 5: Portfolio Selection</h3>'),
                 self.portfolio_table,
-                widgets.HBox([self.prev_button, self.next_button])
+                widgets.HBox([prev_btn, next_btn])
             ]),
             6: widgets.VBox([
                 widgets.HTML('<h3>Step 6: Save Portfolio</h3>'),
-                self.finish_button,
-                self.prev_button
+                finish_btn,
+                prev_btn
             ])
         }
         
+        if self.step == 3:
+            self.update_customer_stats()
+        elif self.step == 5:
+            self.update_portfolio_table()
+            
         display(steps[self.step])
 
 # Example data
