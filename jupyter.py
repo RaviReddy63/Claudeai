@@ -1,6 +1,6 @@
 import pandas as pd
 import ipywidgets as widgets
-from IPython.display import display, clear_output
+from IPython.display import display, HTML, clear_output
 
 class PortfolioManager:
     def __init__(self, au_data, banker_data, customer_data):
@@ -11,9 +11,10 @@ class PortfolioManager:
             'Bank_Revenue', 'Deposit_Balance', 'Gross_Sales'
         ])
         
+        self.output = widgets.Output()
         self.setup_widgets()
         self.initialize_portfolio_inputs()
-        self.display_au_selection()
+        self.display_interface()
 
     def setup_widgets(self):
         self.au_dropdown = widgets.Dropdown(
@@ -25,7 +26,8 @@ class PortfolioManager:
         self.range_slider = widgets.FloatSlider(
             min=1, max=20, step=0.5,
             description='Range (km):',
-            layout=widgets.Layout(width='300px')
+            layout=widgets.Layout(width='300px'),
+            style={'description_width': 'initial'}
         )
         
         self.customer_type = widgets.RadioButtons(
@@ -52,6 +54,15 @@ class PortfolioManager:
             layout=widgets.Layout(width='300px')
         )
 
+        self.next_button = widgets.Button(
+            description='Next',
+            layout=widgets.Layout(width='100px')
+        )
+        self.next_button.on_click(self.on_next_click)
+
+        self.customer_stats = widgets.HTML()
+        self.portfolio_table = widgets.HTML()
+
     def initialize_portfolio_inputs(self):
         self.portfolio_inputs = {}
         portfolio_codes = self.banker_data['Portfolio_Code'].unique()
@@ -63,69 +74,124 @@ class PortfolioManager:
                     layout=widgets.Layout(width='200px')
                 )
 
-    def on_au_next(self, b):
-        if self.au_dropdown.value:
-            self.display_distance_selection()
+    def display_interface(self):
+        with self.output:
+            clear_output(wait=True)
+            display(widgets.VBox([
+                widgets.HTML('<h3>Select Administrative Unit</h3>'),
+                self.au_dropdown,
+                self.next_button
+            ]))
+        display(self.output)
 
-    def on_distance_next(self, b):
-        self.display_customer_type()
-
-    def on_customer_type_next(self, b):
-        self.display_min_values()
-
-    def on_min_values_next(self, b):
-        self.display_portfolio_selection()
+    def on_next_click(self, b):
+        if not hasattr(self, 'current_step'):
+            self.current_step = 1
         
-    def display_au_selection(self):
-        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
-        next_btn.on_click(self.on_au_next)
-        display(widgets.VBox([
-            self.au_dropdown,
-            next_btn
-        ]))
+        if self.current_step == 1 and self.au_dropdown.value:
+            self.current_step = 2
+            self.show_distance_section()
+        elif self.current_step == 2:
+            self.current_step = 3
+            self.show_customer_section()
+        elif self.current_step == 3:
+            self.current_step = 4
+            self.show_min_values_section()
+        elif self.current_step == 4:
+            self.current_step = 5
+            self.show_portfolio_section()
 
-    def display_distance_selection(self):
-        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
-        next_btn.on_click(self.on_distance_next)
-        display(widgets.VBox([
-            self.range_slider,
-            next_btn
-        ]))
+    def show_distance_section(self):
+        with self.output:
+            clear_output(wait=True)
+            display(widgets.VBox([
+                widgets.HTML('<h3>Select Administrative Unit</h3>'),
+                self.au_dropdown,
+                widgets.HTML('<h3>Set Distance Range</h3>'),
+                self.range_slider,
+                self.next_button
+            ]))
 
-    def display_customer_type(self):
-        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
-        next_btn.on_click(self.on_customer_type_next)
+    def show_customer_section(self):
+        self.update_customer_stats()
+        with self.output:
+            clear_output(wait=True)
+            display(widgets.VBox([
+                widgets.HTML('<h3>Select Administrative Unit</h3>'),
+                self.au_dropdown,
+                widgets.HTML('<h3>Set Distance Range</h3>'),
+                self.range_slider,
+                widgets.HTML('<h3>Customer Type</h3>'),
+                self.customer_type,
+                self.customer_stats,
+                self.next_button
+            ]))
+
+    def show_min_values_section(self):
+        with self.output:
+            clear_output(wait=True)
+            display(widgets.VBox([
+                widgets.HTML('<h3>Select Administrative Unit</h3>'),
+                self.au_dropdown,
+                widgets.HTML('<h3>Set Distance Range</h3>'),
+                self.range_slider,
+                widgets.HTML('<h3>Customer Type</h3>'),
+                self.customer_type,
+                self.customer_stats,
+                widgets.HTML('<h3>Set Minimum Values</h3>'),
+                self.revenue_slider,
+                self.deposit_slider,
+                self.sales_slider,
+                self.next_button
+            ]))
+
+    def show_portfolio_section(self):
+        self.update_portfolio_table()
+        finish_button = widgets.Button(description='Create Portfolio')
+        finish_button.on_click(self.save_portfolio)
         
+        with self.output:
+            clear_output(wait=True)
+            display(widgets.VBox([
+                widgets.HTML('<h3>Select Administrative Unit</h3>'),
+                self.au_dropdown,
+                widgets.HTML('<h3>Set Distance Range</h3>'),
+                self.range_slider,
+                widgets.HTML('<h3>Customer Type</h3>'),
+                self.customer_type,
+                self.customer_stats,
+                widgets.HTML('<h3>Set Minimum Values</h3>'),
+                self.revenue_slider,
+                self.deposit_slider,
+                self.sales_slider,
+                widgets.HTML('<h3>Portfolio Selection</h3>'),
+                self.portfolio_table,
+                finish_button
+            ]))
+
+    def update_customer_stats(self):
         filtered_customers = self.filter_customers()
         assigned = len(filtered_customers[filtered_customers['Portfolio_Code'].notna()])
         unassigned = len(filtered_customers[filtered_customers['Portfolio_Code'].isna()])
         
-        stats = widgets.HTML(f"""
+        self.customer_stats.value = f"""
         <div style='padding: 10px; background-color: #f5f5f5; border-radius: 5px;'>
             <h4 style='margin-top: 0;'>Customers in Range:</h4>
             <p>Assigned: {assigned}</p>
             <p>Unassigned: {unassigned}</p>
             <p>Total: {assigned + unassigned}</p>
         </div>
-        """)
-        
-        display(widgets.VBox([
-            self.customer_type,
-            stats,
-            next_btn
-        ]))
+        """
 
-    def display_min_values(self):
-        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
-        next_btn.on_click(self.on_min_values_next)
-        display(widgets.VBox([
-            self.revenue_slider,
-            self.deposit_slider,
-            self.sales_slider,
-            next_btn
-        ]))
+    def filter_customers(self):
+        return self.customer_data[
+            (self.customer_data['AU_Number'] == self.au_dropdown.value) &
+            (self.customer_data['Bank_Revenue'] >= self.revenue_slider.value) &
+            (self.customer_data['Deposit_Balance'] >= self.deposit_slider.value) &
+            (self.customer_data['Gross_Sales'] >= self.sales_slider.value)
+        ]
 
-    def display_portfolio_selection(self):
+    def update_portfolio_table(self):
         filtered_customers = self.filter_customers()
         portfolio_stats = filtered_customers.groupby('Portfolio_Code').agg({
             'Customer_ID': 'count',
@@ -140,22 +206,7 @@ class PortfolioManager:
             how='left'
         )
         
-        table_html = self.create_portfolio_table(portfolio_stats)
-        finish_btn = widgets.Button(description='Create Portfolio', layout=widgets.Layout(width='150px'))
-        finish_btn.on_click(self.save_portfolio)
-        
-        display(widgets.VBox([
-            widgets.HTML(table_html),
-            finish_btn
-        ]))
-
-    def filter_customers(self):
-        return self.customer_data[
-            (self.customer_data['AU_Number'] == self.au_dropdown.value) &
-            (self.customer_data['Bank_Revenue'] >= self.revenue_slider.value) &
-            (self.customer_data['Deposit_Balance'] >= self.deposit_slider.value) &
-            (self.customer_data['Gross_Sales'] >= self.sales_slider.value)
-        ]
+        self.portfolio_table.value = self.create_portfolio_table(portfolio_stats)
 
     def create_portfolio_table(self, portfolio_stats):
         table_html = """
@@ -202,13 +253,14 @@ class PortfolioManager:
             selected_customers = pd.concat([selected_customers, portfolio_customers])
         
         selected_customers.to_csv('new_portfolio.csv', index=False)
-        print("\nPortfolio Summary:")
-        print(f"Total Customers: {len(selected_customers)}")
-        print(f"Total Revenue: ${selected_customers['Bank_Revenue'].sum():,.2f}")
-        print(f"Total Deposits: ${selected_customers['Deposit_Balance'].sum():,.2f}")
-        print(f"Total Sales: ${selected_customers['Gross_Sales'].sum():,.2f}")
+        with self.output:
+            print("\nPortfolio Summary:")
+            print(f"Total Customers: {len(selected_customers)}")
+            print(f"Total Revenue: ${selected_customers['Bank_Revenue'].sum():,.2f}")
+            print(f"Total Deposits: ${selected_customers['Deposit_Balance'].sum():,.2f}")
+            print(f"Total Sales: ${selected_customers['Gross_Sales'].sum():,.2f}")
 
-# Example data
+# Example usage
 au_data = [
     [1, 40.7128, -74.0060],
     [2, 41.8781, -87.6298],
