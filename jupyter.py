@@ -1,6 +1,7 @@
 import pandas as pd
 import ipywidgets as widgets
 from IPython.display import display, HTML, clear_output
+import numpy as np
 
 class PortfolioManager:
     def __init__(self, au_data, banker_data, customer_data):
@@ -27,6 +28,7 @@ class PortfolioManager:
         
         self.range_slider = widgets.FloatSlider(
             min=1, max=20, step=0.5,
+            value=1,
             description='Range (km):',
             layout=widgets.Layout(width='300px'),
             style={'description_width': 'initial'}
@@ -34,24 +36,28 @@ class PortfolioManager:
         
         self.customer_type = widgets.RadioButtons(
             options=['All', 'Assigned', 'Unassigned'],
+            value='All',
             description='Type:',
             layout=widgets.Layout(width='300px')
         )
         
         self.revenue_slider = widgets.FloatSlider(
             min=0, max=self.customer_data['Bank_Revenue'].max(),
+            value=0,
             description='Min Revenue:',
             layout=widgets.Layout(width='300px')
         )
         
         self.deposit_slider = widgets.FloatSlider(
             min=0, max=self.customer_data['Deposit_Balance'].max(),
+            value=0,
             description='Min Deposit:',
             layout=widgets.Layout(width='300px')
         )
         
         self.sales_slider = widgets.FloatSlider(
             min=0, max=self.customer_data['Gross_Sales'].max(),
+            value=0,
             description='Min Sales:',
             layout=widgets.Layout(width='300px')
         )
@@ -122,7 +128,8 @@ class PortfolioManager:
             if pd.notna(portfolio):
                 self.portfolio_inputs[portfolio] = widgets.IntSlider(
                     min=0, max=100,
-                    description=f'Count:',
+                    value=0,
+                    description=f'Select:',
                     layout=widgets.Layout(width='200px')
                 )
 
@@ -130,6 +137,104 @@ class PortfolioManager:
         if self.current_step < 5:
             self.current_step += 1
             self.refresh_display()
+
+    def filter_customers(self):
+        def haversine_distance(lat1, lon1, lat2, lon2):
+            R = 6371  # Earth's radius in kilometers
+            
+            lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            
+            a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+            c = 2 * np.arcsin(np.sqrt(a))
+            distance = R * c
+            
+            return distance
+
+        # Get selected AU coordinates
+        selected_au = self.au_data[self.au_data['AU_Number'] == self.au_dropdown.value].iloc[0]
+        au_lat, au_lon = selected_au['Latitude'], selected_au['Longitude']
+
+        # Calculate distances for all customers
+        distances = self.customer_data.apply(
+            lambda row: haversine_distance(au_lat, au_lon, row['Latitude'], row['Longitude']),
+            axis=1
+        )
+
+        # Apply all filters
+        filtered = self.customer_data[
+            (self.customer_data['AU_Number'] == self.au_dropdown.value) &
+            (distances <= self.range_slider.value) &
+            (self.customer_data['Bank_Revenue'] >= self.revenue_slider.value) &
+            (self.customer_data['Deposit_Balance'] >= self.deposit_slider.value) &
+            (self.customer_data['Gross_Sales'] >= self.sales_slider.value)
+        ]
+
+        # Apply customer type filter
+        if self.customer_type.value == 'Assigned':
+            filtered = filtered[filtered['Portfolio_Code'].notna()]
+        elif self.customer_type.value == 'Unassigned':
+            filtered = filtered[filtered['Portfolio_Code'].isna()]
+
+        return filtered
+
+    def update_portfolio_table(self):
+        filtered_customers = self.filter_customers()
+        portfolio_stats = filtered_customers.groupby('Portfolio_Code').agg({
+            'Customer_ID': 'count',
+            'Bank_Revenue': 'sum',
+            'Deposit_Balance': 'sum',
+            'Gross_Sales': 'sum'
+        }).reset_index()
+        
+        portfolio_stats = portfolio_stats.merge(
+            self.banker_data[['Portfolio_Code', 'Banker_ID']],
+            on='Portfolio_Code',
+            how='left'
+        )
+        
+        table_html, portfolio_widgets = self.create_portfolio_table(portfolio_stats)
+        self.portfolio_table.value = table_html
+        return portfolio_widgets
+
+    def create_portfolio_table(self, portfolio_stats):
+        table_html = """
+        <table style='width: 100%; border-collapse: collapse;'>
+            <tr style='background-color: #e0e0e0;'>
+                <th style='padding: 8px; text-align: left;'>Portfolio</th>
+                <th style='padding: 8px; text-align: left;'>Banker</th>
+                <th style='padding: 8px; text-align: right;'>Customers</th>
+                <th style='padding: 8px; text-align: right;'>Revenue</th>
+                <th style='padding: 8px; text-align: right;'>Deposits</th>
+                <th style='padding: 8px; text-align: right;'>Sales</th>
+                <th style='padding: 8px; text-align: center;'>Select</th>
+            </tr>
+        """
+        
+        portfolio_widgets = []
+        for _, row in portfolio_stats.iterrows():
+            portfolio = row['Portfolio_Code']
+            if pd.isna(portfolio):
+                continue
+                
+            self.portfolio_inputs[portfolio].max = int(row['Customer_ID'])
+            portfolio_widgets.append(self.portfolio_inputs[portfolio])
+                
+            table_html += f"""
+            <tr style='border-bottom: 1px solid #ddd;'>
+                <td style='padding: 8px;'>{portfolio}</td>
+                <td style='padding: 8px;'>{row['Banker_ID']}</td>
+                <td style='padding: 8px; text-align: right;'>{int(row['Customer_ID'])}</td>
+                <td style='padding: 8px; text-align: right;'>${row['Bank_Revenue']:,.2f}</td>
+                <td style='padding: 8px; text-align: right;'>${row['Deposit_Balance']:,.2f}</td>
+                <td style='padding: 8px; text-align: right;'>${row['Gross_Sales']:,.2f}</td>
+                <td style='padding: 8px; text-align: center;'>{len(portfolio_widgets)}</td>
+            </tr>
+            """
+        
+        table_html += "</table>"
+        return table_html, portfolio_widgets
 
     def refresh_display(self):
         widgets_to_show = [
@@ -160,13 +265,18 @@ class PortfolioManager:
             ])
 
         if self.current_step >= 5:
-            self.update_portfolio_table()
+            portfolio_widgets = self.update_portfolio_table()
             widgets_to_show.extend([
                 widgets.HTML('<h3>Portfolio Selection</h3>'),
                 self.portfolio_table,
+            ])
+            for i, widget in enumerate(portfolio_widgets, 1):
+                widget.description = f'Select {i}:'
+            widgets_to_show.extend(portfolio_widgets)
+            widgets_to_show.append(
                 widgets.Button(description='Create Portfolio', 
                              on_click=self.save_portfolio)
-            ])
+            )
         else:
             widgets_to_show.append(self.next_button)
 
@@ -191,72 +301,6 @@ class PortfolioManager:
             <p>Total: {assigned + unassigned}</p>
         </div>
         """
-
-    def filter_customers(self):
-        filtered = self.customer_data[
-            (self.customer_data['AU_Number'] == self.au_dropdown.value) &
-            (self.customer_data['Bank_Revenue'] >= self.revenue_slider.value) &
-            (self.customer_data['Deposit_Balance'] >= self.deposit_slider.value) &
-            (self.customer_data['Gross_Sales'] >= self.sales_slider.value)
-        ]
-        
-        if self.customer_type.value == 'Assigned':
-            filtered = filtered[filtered['Portfolio_Code'].notna()]
-        elif self.customer_type.value == 'Unassigned':
-            filtered = filtered[filtered['Portfolio_Code'].isna()]
-            
-        return filtered
-
-    def update_portfolio_table(self):
-        filtered_customers = self.filter_customers()
-        portfolio_stats = filtered_customers.groupby('Portfolio_Code').agg({
-            'Customer_ID': 'count',
-            'Bank_Revenue': 'sum',
-            'Deposit_Balance': 'sum',
-            'Gross_Sales': 'sum'
-        }).reset_index()
-        
-        portfolio_stats = portfolio_stats.merge(
-            self.banker_data[['Portfolio_Code', 'Banker_ID']],
-            on='Portfolio_Code',
-            how='left'
-        )
-        
-        self.portfolio_table.value = self.create_portfolio_table(portfolio_stats)
-
-    def create_portfolio_table(self, portfolio_stats):
-        table_html = """
-        <table style='width: 100%; border-collapse: collapse;'>
-            <tr style='background-color: #e0e0e0;'>
-                <th style='padding: 8px; text-align: left;'>Portfolio</th>
-                <th style='padding: 8px; text-align: left;'>Banker</th>
-                <th style='padding: 8px; text-align: right;'>Customers</th>
-                <th style='padding: 8px; text-align: right;'>Revenue</th>
-                <th style='padding: 8px; text-align: right;'>Deposits</th>
-                <th style='padding: 8px; text-align: right;'>Sales</th>
-                <th style='padding: 8px; text-align: center;'>Select</th>
-            </tr>
-        """
-        
-        for _, row in portfolio_stats.iterrows():
-            portfolio = row['Portfolio_Code']
-            if pd.isna(portfolio):
-                continue
-                
-            table_html += f"""
-            <tr style='border-bottom: 1px solid #ddd;'>
-                <td style='padding: 8px;'>{portfolio}</td>
-                <td style='padding: 8px;'>{row['Banker_ID']}</td>
-                <td style='padding: 8px; text-align: right;'>{int(row['Customer_ID'])}</td>
-                <td style='padding: 8px; text-align: right;'>${row['Bank_Revenue']:,.2f}</td>
-                <td style='padding: 8px; text-align: right;'>${row['Deposit_Balance']:,.2f}</td>
-                <td style='padding: 8px; text-align: right;'>${row['Gross_Sales']:,.2f}</td>
-                <td style='padding: 8px; text-align: center;'>{self.portfolio_inputs[portfolio]}</td>
-            </tr>
-            """
-        
-        table_html += "</table>"
-        return table_html
 
     def save_portfolio(self, b):
         filtered_customers = self.filter_customers()
