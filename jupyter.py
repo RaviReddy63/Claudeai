@@ -4,7 +4,6 @@ from IPython.display import display, clear_output
 
 class PortfolioManager:
     def __init__(self, au_data, banker_data, customer_data):
-        self.step = 1
         self.au_data = pd.DataFrame(au_data, columns=['AU_Number', 'Latitude', 'Longitude'])
         self.banker_data = pd.DataFrame(banker_data, columns=['Banker_ID', 'Banker_AU', 'Portfolio_Code'])
         self.customer_data = pd.DataFrame(customer_data, columns=[
@@ -14,12 +13,7 @@ class PortfolioManager:
         
         self.setup_widgets()
         self.initialize_portfolio_inputs()
-        
-        # Add widget observers
-        self.au_dropdown.observe(self.on_widget_change, names='value')
-        self.customer_type.observe(self.on_widget_change, names='value')
-        
-        self.display_current_step()
+        self.display_au_selection()
 
     def setup_widgets(self):
         self.au_dropdown = widgets.Dropdown(
@@ -57,9 +51,6 @@ class PortfolioManager:
             description='Min Sales:',
             layout=widgets.Layout(width='300px')
         )
-        
-        self.customer_stats = widgets.HTML()
-        self.portfolio_table = widgets.HTML()
 
     def initialize_portfolio_inputs(self):
         self.portfolio_inputs = {}
@@ -72,51 +63,70 @@ class PortfolioManager:
                     layout=widgets.Layout(width='200px')
                 )
 
-    def on_widget_change(self, change):
-        if self.step == 3:
-            self.update_customer_stats()
-        elif self.step == 5:
-            self.update_portfolio_table()
+    def on_au_next(self, b):
+        if self.au_dropdown.value:
+            self.display_distance_selection()
 
-    def filter_customers(self):
-        if not self.au_dropdown.value:
-            return pd.DataFrame()
-            
-        in_range = self.customer_data[
-            (self.customer_data['AU_Number'] == self.au_dropdown.value)
-        ]
-        
-        if self.customer_type.value == 'Assigned':
-            in_range = in_range[in_range['Portfolio_Code'].notna()]
-        elif self.customer_type.value == 'Unassigned':
-            in_range = in_range[in_range['Portfolio_Code'].isna()]
-        
-        return in_range[
-            (in_range['Bank_Revenue'] >= self.revenue_slider.value) &
-            (in_range['Deposit_Balance'] >= self.deposit_slider.value) &
-            (in_range['Gross_Sales'] >= self.sales_slider.value)
-        ]
+    def on_distance_next(self, b):
+        self.display_customer_type()
 
-    def update_customer_stats(self):
+    def on_customer_type_next(self, b):
+        self.display_min_values()
+
+    def on_min_values_next(self, b):
+        self.display_portfolio_selection()
+        
+    def display_au_selection(self):
+        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
+        next_btn.on_click(self.on_au_next)
+        display(widgets.VBox([
+            self.au_dropdown,
+            next_btn
+        ]))
+
+    def display_distance_selection(self):
+        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
+        next_btn.on_click(self.on_distance_next)
+        display(widgets.VBox([
+            self.range_slider,
+            next_btn
+        ]))
+
+    def display_customer_type(self):
+        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
+        next_btn.on_click(self.on_customer_type_next)
+        
         filtered_customers = self.filter_customers()
         assigned = len(filtered_customers[filtered_customers['Portfolio_Code'].notna()])
         unassigned = len(filtered_customers[filtered_customers['Portfolio_Code'].isna()])
         
-        self.customer_stats.value = f"""
+        stats = widgets.HTML(f"""
         <div style='padding: 10px; background-color: #f5f5f5; border-radius: 5px;'>
             <h4 style='margin-top: 0;'>Customers in Range:</h4>
             <p>Assigned: {assigned}</p>
             <p>Unassigned: {unassigned}</p>
             <p>Total: {assigned + unassigned}</p>
         </div>
-        """
+        """)
+        
+        display(widgets.VBox([
+            self.customer_type,
+            stats,
+            next_btn
+        ]))
 
-    def update_portfolio_table(self):
+    def display_min_values(self):
+        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
+        next_btn.on_click(self.on_min_values_next)
+        display(widgets.VBox([
+            self.revenue_slider,
+            self.deposit_slider,
+            self.sales_slider,
+            next_btn
+        ]))
+
+    def display_portfolio_selection(self):
         filtered_customers = self.filter_customers()
-        if filtered_customers.empty:
-            self.portfolio_table.value = ""
-            return
-            
         portfolio_stats = filtered_customers.groupby('Portfolio_Code').agg({
             'Customer_ID': 'count',
             'Bank_Revenue': 'sum',
@@ -130,19 +140,25 @@ class PortfolioManager:
             how='left'
         )
         
-        for portfolio in self.portfolio_inputs:
-            if portfolio in portfolio_stats['Portfolio_Code'].values:
-                customer_count = int(portfolio_stats[
-                    portfolio_stats['Portfolio_Code'] == portfolio
-                ]['Customer_ID'].iloc[0])
-                self.portfolio_inputs[portfolio].max = customer_count
-        
         table_html = self.create_portfolio_table(portfolio_stats)
-        self.portfolio_table.value = table_html
+        finish_btn = widgets.Button(description='Create Portfolio', layout=widgets.Layout(width='150px'))
+        finish_btn.on_click(self.save_portfolio)
+        
+        display(widgets.VBox([
+            widgets.HTML(table_html),
+            finish_btn
+        ]))
+
+    def filter_customers(self):
+        return self.customer_data[
+            (self.customer_data['AU_Number'] == self.au_dropdown.value) &
+            (self.customer_data['Bank_Revenue'] >= self.revenue_slider.value) &
+            (self.customer_data['Deposit_Balance'] >= self.deposit_slider.value) &
+            (self.customer_data['Gross_Sales'] >= self.sales_slider.value)
+        ]
 
     def create_portfolio_table(self, portfolio_stats):
         table_html = """
-        <div style='padding: 10px; background-color: #f5f5f5; border-radius: 5px;'>
         <table style='width: 100%; border-collapse: collapse;'>
             <tr style='background-color: #e0e0e0;'>
                 <th style='padding: 8px; text-align: left;'>Portfolio</th>
@@ -172,7 +188,7 @@ class PortfolioManager:
             </tr>
             """
         
-        table_html += "</table></div>"
+        table_html += "</table>"
         return table_html
 
     def save_portfolio(self, b):
@@ -185,88 +201,12 @@ class PortfolioManager:
             ].head(input_widget.value)
             selected_customers = pd.concat([selected_customers, portfolio_customers])
         
-        if self.customer_type.value in ['All', 'Unassigned']:
-            unassigned = filtered_customers[filtered_customers['Portfolio_Code'].isna()]
-            selected_customers = pd.concat([selected_customers, unassigned])
-        
         selected_customers.to_csv('new_portfolio.csv', index=False)
         print("\nPortfolio Summary:")
         print(f"Total Customers: {len(selected_customers)}")
         print(f"Total Revenue: ${selected_customers['Bank_Revenue'].sum():,.2f}")
         print(f"Total Deposits: ${selected_customers['Deposit_Balance'].sum():,.2f}")
         print(f"Total Sales: ${selected_customers['Gross_Sales'].sum():,.2f}")
-
-    def next_step(self, b):
-        if self.step < 6:
-            self.step += 1
-            self.display_current_step()
-            if self.step == 3:
-                self.update_customer_stats()
-            elif self.step == 5:
-                self.update_portfolio_table()
-
-    def prev_step(self, b):
-        if self.step > 1:
-            self.step -= 1
-            self.display_current_step()
-            if self.step == 3:
-                self.update_customer_stats()
-            elif self.step == 5:
-                self.update_portfolio_table()
-
-    def display_current_step(self):
-        clear_output(wait=True)
-        
-        next_btn = widgets.Button(description='Next', layout=widgets.Layout(width='100px'))
-        prev_btn = widgets.Button(description='Previous', layout=widgets.Layout(width='100px'))
-        finish_btn = widgets.Button(description='Create Portfolio', layout=widgets.Layout(width='150px'))
-        
-        next_btn.on_click(lambda b: self.next_step(b))
-        prev_btn.on_click(lambda b: self.prev_step(b))
-        finish_btn.on_click(lambda b: self.save_portfolio(b))
-        
-        steps = {
-            1: widgets.VBox([
-                widgets.HTML('<h3>Step 1: Select Administrative Unit</h3>'),
-                self.au_dropdown,
-                next_btn
-            ]),
-            2: widgets.VBox([
-                widgets.HTML('<h3>Step 2: Set Distance Range</h3>'),
-                self.range_slider,
-                widgets.HBox([prev_btn, next_btn])
-            ]),
-            3: widgets.VBox([
-                widgets.HTML('<h3>Step 3: Customer Type & Statistics</h3>'),
-                self.customer_type,
-                self.customer_stats,
-                widgets.HBox([prev_btn, next_btn])
-            ]),
-            4: widgets.VBox([
-                widgets.HTML('<h3>Step 4: Set Minimum Values</h3>'),
-                self.revenue_slider,
-                self.deposit_slider,
-                self.sales_slider,
-                widgets.HBox([prev_btn, next_btn])
-            ]),
-            5: widgets.VBox([
-                widgets.HTML('<h3>Step 5: Portfolio Selection</h3>'),
-                self.portfolio_table,
-                widgets.HBox([prev_btn, next_btn])
-            ]),
-            6: widgets.VBox([
-                widgets.HTML('<h3>Step 6: Save Portfolio</h3>'),
-                finish_btn,
-                prev_btn
-            ])
-        }
-        
-        if self.step == 3:
-            self.update_customer_stats()
-        elif self.step == 5:
-            self.update_portfolio_table()
-            
-        display(steps[self.step])
 
 # Example data
 au_data = [
