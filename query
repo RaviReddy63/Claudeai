@@ -1,0 +1,21 @@
+WITH RMM AS (
+    SELECT id 
+    FROM SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi
+    WHERE managerid IN ('abc', 'cde', 'efg')
+    AND status = 'A'
+),
+BANKERS_AND_GROUPS AS (
+    SELECT DISTINCT CG.id AS client_group_id, CG.ECN AS CG_ECN, CG.PORTFOLIO_CD
+    FROM SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi U
+    JOIN CRM_LITE.VT_CRV_BKP_CLIENT_GROUP@crv_p01bobgi CG ON U.portfolio_code = CG.portfolio_cd
+    WHERE U.managerid IN (SELECT id FROM RMM)
+    AND U.status = 'A'
+)
+SELECT 
+    BG.CG_ECN, 
+    A.ECN, 
+    BG.PORTFOLIO_CD, 
+    RC.client_group
+FROM CRM_LITE.V_CRV_BKP_RELATED_CLIENT@crv_p01bobgi RC
+JOIN BANKERS_AND_GROUPS BG ON RC.client_group = BG.client_group_id
+JOIN CRM_LITE.V_CRV_BKP_ACCOUNT@crv_p01bobgi A ON RC.customer = A.id;
