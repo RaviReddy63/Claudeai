@@ -1,15 +1,16 @@
-WITH RMM AS (
-    SELECT id 
-    FROM SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi
-    WHERE managerid IN ('abc', 'cde', 'efg')
-    AND status = 'A'
+WITH PORTFOLIO_CODES AS (
+    SELECT A.PORT_ID AS PORTFOLIO_CD
+    FROM BANKER.BP_BBSG_INV A
+    INNER JOIN BANKER.T_EMP B ON A.EMP_ID = B.EMP_ID
+    WHERE A.PORT_TYP_CD IN ('BUSCBRM', 'BUSSTRA', 'BUSVIRT')
+    AND A.PORT_ID_STAT IN ('A', 'L')
 ),
 BANKERS_AND_GROUPS AS (
     SELECT DISTINCT CG.id AS client_group_id, CG.ECN AS CG_ECN, CG.PORTFOLIO_CD
     FROM SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi U
     JOIN CRM_LITE.VT_CRV_BKP_CLIENT_GROUP@crv_p01bobgi CG ON U.portfolio_code = CG.portfolio_cd
-    WHERE U.managerid IN (SELECT id FROM RMM)
-    AND U.status = 'A'
+    JOIN PORTFOLIO_CODES PC ON CG.portfolio_cd = PC.PORTFOLIO_CD
+    WHERE U.status = 'A'
 )
 SELECT 
     BG.CG_ECN, 
