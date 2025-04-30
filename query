@@ -1,3 +1,5 @@
+# Optimize the SQL query
+optimized_query = """
 SELECT 
     cg.ID as CG_ID, 
     cg.name as CG_NAME, 
@@ -14,26 +16,23 @@ SELECT
     acc.BILLINGSTREET, 
     acc.BILLINGCITY, 
     acc.BILLINGSTATE, 
-    acc.BILLINGPOSTALCODE, 
-    mtb.management_chain_level_06, 
-    mtb.management_chain_level_07, 
-    mtb.type
+    acc.BILLINGPOSTALCODE
 FROM 
     SCH_CRV_SFDC.T_CRV_BKP_CLIENT_GROUP@crv_p01bobgi cg
-INNER JOIN -- Changed from subquery to join condition
-    (SELECT employee_id FROM Manager_to_banker_alignment_auto WHERE AU != 0 AND employee_id = 1) emp_filter
-    ON CAST(usr.employeenumber AS INT) = emp_filter.employee_id
-LEFT JOIN 
-    CRM_LITE.V_CRV_BKP_ACCOUNT@crv_p01bobgi acc
-    ON cg.ECN = acc.ECN
+JOIN (
+    SELECT DISTINCT portfolio_cd 
+    FROM SCH_CRV_SFDC.T_CRV_BKP_CLIENT_GROUP@crv_p01bobgi 
+    WHERE portfolio_cd IN ({})
+) filter_ports ON cg.portfolio_cd = filter_ports.portfolio_cd
 LEFT JOIN 
     SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi usr
     ON cg.ownerid = usr.id
 LEFT JOIN 
-    (SELECT * FROM Manager_to_banker_alignment_auto WHERE AU != 0 AND employee_id != 1) mtb
-    ON CAST(usr.employeenumber AS INT) = mtb.employee_id
+    CRM_LITE.V_CRV_BKP_ACCOUNT@crv_p01bobgi acc
+    ON cg.ECN = acc.ECN
 WHERE 
     cg.isdeleted = 0
+"""
 -------------------------------------------------------------------------
 
 WITH PORTFOLIO_CODES AS (
