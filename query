@@ -1,3 +1,41 @@
+SELECT 
+    cg.ID as CG_ID, 
+    cg.name as CG_NAME, 
+    cg.ECN as CG_ECN, 
+    cg.portfolio_cd as CG_PORTFOLIO_CD, 
+    cg.RM as CG_EM, 
+    cg.MANAGED as CG_MANAGED, 
+    cg.customer_or_prospect_rs as CG_PROSPECT, 
+    cg.IS_CUSTOMER, 
+    cg.BNK_REV_RS as BANK_REVENUE, 
+    cg.TOTAL_GROSS_SALES_RS as CG_GROSS_SALES, 
+    usr.FIRSTNAME as BANKER_FORSTNAME, 
+    usr.LASTNAME as BANKER_LASTNAME, 
+    acc.BILLINGSTREET, 
+    acc.BILLINGCITY, 
+    acc.BILLINGSTATE, 
+    acc.BILLINGPOSTALCODE, 
+    mtb.management_chain_level_06, 
+    mtb.management_chain_level_07, 
+    mtb.type
+FROM 
+    SCH_CRV_SFDC.T_CRV_BKP_CLIENT_GROUP@crv_p01bobgi cg
+INNER JOIN -- Changed from subquery to join condition
+    (SELECT employee_id FROM Manager_to_banker_alignment_auto WHERE AU != 0 AND employee_id = 1) emp_filter
+    ON CAST(usr.employeenumber AS INT) = emp_filter.employee_id
+LEFT JOIN 
+    CRM_LITE.V_CRV_BKP_ACCOUNT@crv_p01bobgi acc
+    ON cg.ECN = acc.ECN
+LEFT JOIN 
+    SCH_CRV_SFDC.T_CRV_BKP_USER@crv_p01bobgi usr
+    ON cg.ownerid = usr.id
+LEFT JOIN 
+    (SELECT * FROM Manager_to_banker_alignment_auto WHERE AU != 0 AND employee_id != 1) mtb
+    ON CAST(usr.employeenumber AS INT) = mtb.employee_id
+WHERE 
+    cg.isdeleted = 0
+-------------------------------------------------------------------------
+
 WITH PORTFOLIO_CODES AS (
     SELECT DISTINCT A.PORT_ID AS PORTFOLIO_CD
     FROM BANKER.BP_BBSG_INV A
