@@ -1,3 +1,18 @@
+WITH latest_period AS (
+    SELECT MAX(period_dt) AS max_dt 
+    FROM cdid.ts_bbg_account
+),
+valid_customers AS (
+    SELECT DISTINCT CG_ECN 
+    FROM CLIENT_GROUP_TABLE
+)
+SELECT a.cust_id, SUM(a.commitment) AS total_commitment
+FROM cdid.ts_bbg_account a
+JOIN latest_period p ON a.period_dt = p.max_dt
+JOIN valid_customers c ON a.cust_id = c.CG_ECN
+GROUP BY a.cust_id;
+
+---------------------------
 def create_oracle_table_from_dataframe(df, table_name, cursor, connection):
     # 1. Create simple Oracle data type mapping
     def get_oracle_type(dtype):
