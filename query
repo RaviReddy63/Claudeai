@@ -23,6 +23,15 @@ def create_oracle_table_from_dataframe(df, table_name, cursor, connection):
     try:
         cursor.execute(create_sql)
 
+columns = ', '.join([f'"{col}"' for col in df.columns])
+    placeholders = ', '.join([f':{i+1}' for i in range(len(df.columns))])
+    insert_sql = f'INSERT INTO "{table_name}" ({columns}) VALUES ({placeholders})'
+    
+    # 5. Insert data
+    data = [tuple(x) for x in df.replace({np.nan: None}).values]
+    cursor.executemany(insert_sql, data)
+    connection.commit()
+
 
 -----------------------------------------
 # Optimize the SQL query
