@@ -1,3 +1,30 @@
+def create_oracle_table_from_dataframe(df, table_name, cursor, connection):
+    # 1. Create simple Oracle data type mapping
+    def get_oracle_type(dtype):
+        if pd.api.types.is_integer_dtype(dtype):
+            return "NUMBER"
+        elif pd.api.types.is_float_dtype(dtype):
+            return "NUMBER"
+        elif pd.api.types.is_datetime64_dtype(dtype):
+            return "DATE"
+        else:
+            return "VARCHAR2(255)"  # Default to VARCHAR2
+    
+    # 2. Generate CREATE TABLE statement
+    columns = []
+    for col, dtype in df.dtypes.items():
+        oracle_type = get_oracle_type(dtype)
+        # Use double quotes for column names to handle case sensitivity and special characters
+        columns.append(f'"{col}" {oracle_type}')
+    
+    create_sql = f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
+    
+    # 3. Execute CREATE TABLE
+    try:
+        cursor.execute(create_sql)
+
+
+-----------------------------------------
 # Optimize the SQL query
 optimized_query = """
 SELECT 
