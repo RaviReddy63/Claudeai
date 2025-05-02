@@ -1,3 +1,31 @@
+import datetime
+
+def is_last_week_of_quarter():
+    today = datetime.datetime.now()
+    current_month = today.month
+    current_day = today.day
+    
+    # Determine which quarter we're in
+    if current_month in (3, 6, 9, 12):  # Last month of each quarter
+        # Get the last day of the month/quarter
+        if current_month == 12:
+            last_day = datetime.datetime(today.year, current_month, 31)
+        else:
+            last_day = datetime.datetime(today.year, current_month + 1, 1) - datetime.timedelta(days=1)
+        
+        # Check if we're in the last 7 days of the quarter
+        days_until_end = (last_day - today).days
+        return days_until_end < 7
+    return False
+
+# Usage:
+if is_last_week_of_quarter():
+    # Run your process here
+    print("Running end-of-quarter process")
+else:
+    print("Not in the last week of a quarter")
+
+-------------------------------------------
 WITH valid_customers AS (
     SELECT DISTINCT cg_ecn
     FROM client_group_level_table_temp
