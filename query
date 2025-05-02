@@ -1,3 +1,32 @@
+WITH valid_customers AS (
+    SELECT DISTINCT cg_ecn
+    FROM client_group_level_table_temp
+),
+recent_interactions AS (
+    SELECT 
+        a.ecn,
+        COUNT(a.purpose) AS Interactions_count
+    FROM sch_sb_sfdc.v_sbcrm_interaction@crv_p01bobgi a
+    JOIN valid_customers c ON a.ecn = c.cg_ecn
+    WHERE months_between(sysdate, completed_date) <= 3
+    GROUP BY a.ecn
+),
+last_contact AS (
+    SELECT 
+        a.ecn,
+        MAX(completed_date) AS Last_contacted_date
+    FROM sch_sb_sfdc.v_sbcrm_interaction@crv_p01bobgi a
+    JOIN valid_customers c ON a.ecn = c.cg_ecn
+    GROUP BY a.ecn
+)
+SELECT 
+    COALESCE(ri.ecn, lc.ecn) AS CG_ECN,
+    NVL(ri.Interactions_count, 0) AS Interactions_count,
+    lc.Last_contacted_date
+FROM recent_interactions ri
+FULL OUTER JOIN last_contact lc ON ri.ecn = lc.ecn
+WHERE COALESCE(ri.ecn, lc.ecn) IS NOT NULL;
+-----------------------------------------------------
 WITH latest_data AS (
     SELECT /*+ MATERIALIZE */
         ecn,
