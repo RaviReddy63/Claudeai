@@ -1,3 +1,45 @@
+-- Find ECNs with transactions in each combination of two categories
+WITH 
+-- First, create a table that identifies which categories each ECN has transactions in
+ECN_Categories AS (
+    SELECT DISTINCT
+        ecn,
+        category_name
+    FROM 
+        optimized_segment_account_data
+),
+
+-- Next, create a self-join to find all combinations of categories for each ECN
+Category_Pairs AS (
+    SELECT
+        e1.ecn,
+        e1.category_name AS category1,
+        e2.category_name AS category2
+    FROM 
+        ECN_Categories e1
+    JOIN 
+        ECN_Categories e2 
+    ON 
+        e1.ecn = e2.ecn
+        AND e1.category_name < e2.category_name -- This ensures we only get each pair once (A,B but not B,A)
+)
+
+-- Now count the number of ECNs for each category pair
+SELECT
+    category1,
+    category2,
+    COUNT(DISTINCT ecn) AS ecn_count
+FROM 
+    Category_Pairs
+GROUP BY 
+    category1, 
+    category2
+ORDER BY 
+    ecn_count DESC;
+
+-----------------------------
+
+
 -- Step 1: Create the new table
 CREATE TABLE optimized_segment_account_data (
     ecn VARCHAR2(50),          -- Adjust data types and sizes based on your actual schema
