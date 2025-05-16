@@ -1,3 +1,33 @@
+-- Add table hints and optimize joins
+SELECT DISTINCT 
+    a.ecn,
+    a.cs_num_ns,
+    a.cs_num_hh,
+    b.acct_nbr,
+    c.element_id,
+    d.long_desc,
+    e.category_name,
+    e.LONG_DESCRIPTION
+FROM 
+    sbm.segment_cust_sbs a
+INNER JOIN 
+    cdid.ts_bbg_account b
+    ON a.ecn = b.cust_id
+    AND b.period_dt = '01-MAR-2025' 
+    AND b.ACTIVE = 'Y'
+INNER JOIN 
+    tsdda2.RPM_ACCT_TRAN c
+    ON b.acct_nbr = c.acct_number
+    AND c.analysis_period = 202503
+INNER JOIN
+    tsdda2.RPM_ACCT_ELEMID d
+    ON c.element_id = d.element_id
+    AND d.mend_dt = '31-MAR-2025'
+INNER JOIN 
+    EID_DEF_202502 e
+    ON c.element_id = e.ELEMENT_ID;
+
+---------------------------------------------------------------
 import datetime
 
 def is_last_week_of_quarter():
