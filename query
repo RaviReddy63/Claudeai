@@ -1,3 +1,69 @@
+-- Step 1: Create the new table
+CREATE TABLE optimized_segment_account_data (
+    ecn VARCHAR2(50),          -- Adjust data types and sizes based on your actual schema
+    cs_num_ns VARCHAR2(50),
+    cs_num_hh VARCHAR2(50),
+    acct_nbr VARCHAR2(50),
+    element_id VARCHAR2(30),
+    long_desc VARCHAR2(200),
+    category_name VARCHAR2(100),
+    element_long_description VARCHAR2(200)
+);
+
+-- Step 2: Create indexes on the new table before inserting data (optional but recommended)
+CREATE INDEX idx_opt_ecn ON optimized_segment_account_data(ecn);
+CREATE INDEX idx_opt_acct_nbr ON optimized_segment_account_data(acct_nbr);
+CREATE INDEX idx_opt_element_id ON optimized_segment_account_data(element_id);
+
+-- Step 3: Insert data from the optimized query into the new table
+INSERT INTO optimized_segment_account_data (
+    ecn,
+    cs_num_ns,
+    cs_num_hh,
+    acct_nbr,
+    element_id,
+    long_desc,
+    category_name,
+    element_long_description
+)
+SELECT DISTINCT 
+    a.ecn,
+    a.cs_num_ns,
+    a.cs_num_hh,
+    b.acct_nbr,
+    c.element_id,
+    d.long_desc,
+    e.category_name,
+    e.LONG_DESCRIPTION
+FROM 
+    sbm.segment_cust_sbs a
+INNER JOIN 
+    cdid.ts_bbg_account b
+    ON a.ecn = b.cust_id
+    AND b.period_dt = '01-MAR-2025' 
+    AND b.ACTIVE = 'Y'
+INNER JOIN 
+    tsdda2.RPM_ACCT_TRAN c
+    ON b.acct_nbr = c.acct_number
+    AND c.analysis_period = 202503
+INNER JOIN
+    tsdda2.RPM_ACCT_ELEMID d
+    ON c.element_id = d.element_id
+    AND d.mend_dt = '31-MAR-2025'
+INNER JOIN 
+    EID_DEF_202502 e
+    ON c.element_id = e.ELEMENT_ID;
+
+-- Step 4: Analyze the table to update statistics (important for query optimizer)
+ANALYZE TABLE optimized_segment_account_data COMPUTE STATISTICS;
+-- Or for Oracle: EXEC DBMS_STATS.GATHER_TABLE_STATS('schema_name', 'optimized_segment_account_data');
+
+
+----------------------------
+
+
+
+
 -- Add table hints and optimize joins
 SELECT DISTINCT 
     a.ecn,
