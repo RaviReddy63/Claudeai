@@ -263,20 +263,26 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
             centralized_portfolios = [k for k in portfolios.keys() if k.startswith('CENTRALIZED')]
             
             if centralized_portfolios:
-                for customer_idx in remaining_indices:
-                    if customer_idx not in remaining.index:
-                        continue
-                        
-                    # Find a centralized portfolio with space
-                    for portfolio_name in centralized_portfolios:
-                        if portfolios[portfolio_name]['customer_count'] < max_portfolio_size:
-                            portfolios[portfolio_name]['customer_indices'].append(customer_idx)
-                            portfolios[portfolio_name]['customer_count'] += 1
-                            new_customer = remaining.loc[[customer_idx]].copy()
-                            portfolios[portfolio_name]['customers'] = pd.concat([
-                                portfolios[portfolio_name]['customers'], new_customer
-                            ])
-                            break
+                # Instead of adding one by one, rebuild portfolios with additional customers
+                remaining_to_distribute = [idx for idx in remaining_indices if idx in remaining.index]
+                
+                for i, customer_idx in enumerate(remaining_to_distribute):
+                    # Find a centralized portfolio with space (round-robin distribution)
+                    portfolio_name = centralized_portfolios[i % len(centralized_portfolios)]
+                    
+                    if portfolios[portfolio_name]['customer_count'] < max_portfolio_size:
+                        portfolios[portfolio_name]['customer_indices'].append(customer_idx)
+                        portfolios[portfolio_name]['customer_count'] += 1
+                
+                # Rebuild customer DataFrames for all modified portfolios
+                for portfolio_name in centralized_portfolios:
+                    all_indices = portfolios[portfolio_name]['customer_indices']
+                    valid_indices = [idx for idx in all_indices if idx in unassigned_customers.index]
+                    portfolios[portfolio_name]['customers'] = unassigned_customers.loc[valid_indices].copy()
+                    portfolios[portfolio_name]['customer_count'] = len(valid_indices)
+                    
+                print(f"Distributed {len(remaining_to_distribute)} remaining customers across existing portfolios")
+                    
             else:
                 # Create a small centralized portfolio if no other option
                 valid_remaining = [idx for idx in remaining_indices if idx in remaining.index]
@@ -294,6 +300,8 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
     
     except Exception as e:
         print(f"Error creating centralized portfolios: {e}")
+        import traceback
+        traceback.print_exc()
     
     return portfolios
 
