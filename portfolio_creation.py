@@ -1,331 +1,223 @@
-import pandas as pd
-import numpy as np
-from math import radians, cos, sin, asin, sqrt, ceil
-from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
-import itertools
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.sql.window import Window
+import math
 
-@dataclass
-class Customer:
-    ecn: str
-    lat: float
-    lon: float
-    billing_street: str
-    billing_city: str
-    billing_state: str
-
-@dataclass
-class Branch:
-    branch_au: str
-    lat: float
-    lon: float
-
-@dataclass
-class Portfolio:
-    portfolio_id: str
-    portfolio_type: str  # 'in-market' or 'centralized'
-    branch_au: Optional[str]  # None for centralized
-    customers: List[Customer]
-    
-class PortfolioOptimizer:
-    def __init__(self, min_portfolio_size: int = 220, max_portfolio_size: int = 250, 
-                 proximity_miles: float = 20.0):
+class SparkPortfolioOptimizer:
+    def __init__(self, spark: SparkSession, min_portfolio_size: int = 220, 
+                 max_portfolio_size: int = 250, proximity_miles: float = 20.0):
+        self.spark = spark
         self.min_portfolio_size = min_portfolio_size
         self.max_portfolio_size = max_portfolio_size
         self.proximity_miles = proximity_miles
         
-    def haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """
-        Calculate the great circle distance between two points 
-        on the earth (specified in decimal degrees) in miles
-        """
-        # Convert decimal degrees to radians
-        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-        
-        # Haversine formula
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-        c = 2 * asin(sqrt(a))
-        
-        # Radius of earth in miles
-        r = 3956
-        return c * r
-    
-    def get_customers_within_proximity(self, branch: Branch, customers: List[Customer]) -> List[Customer]:
-        """Get all customers within proximity_miles of a branch"""
-        nearby_customers = []
-        for customer in customers:
-            distance = self.haversine_distance(
-                branch.lat, branch.lon, customer.lat, customer.lon
-            )
-            if distance <= self.proximity_miles:
-                nearby_customers.append(customer)
-        return nearby_customers
-    
-    def create_in_market_portfolios(self, branches: List[Branch], 
-                                  customers: List[Customer]) -> Tuple[List[Portfolio], List[Customer]]:
-        """
-        Create in-market portfolios by assigning customers to nearby branches
-        Returns: (portfolios, unassigned_customers)
-        """
-        portfolios = []
-        assigned_customers = set()
-        
-        # Sort branches by potential customer count (descending) for better optimization
-        branch_customer_counts = []
-        for branch in branches:
-            nearby = self.get_customers_within_proximity(branch, customers)
-            branch_customer_counts.append((branch, len(nearby), nearby))
-        
-        # Sort by customer count descending
-        branch_customer_counts.sort(key=lambda x: x[1], reverse=True)
-        
-        for branch, count, nearby_customers in branch_customer_counts:
-            # Filter out already assigned customers
-            available_customers = [c for c in nearby_customers if c.ecn not in assigned_customers]
-            
-            if len(available_customers) >= self.min_portfolio_size:
-                # Create portfolios for this branch
-                portfolios_for_branch = self._create_portfolios_for_branch(
-                    branch, available_customers
-                )
-                portfolios.extend(portfolios_for_branch)
+    def haversine_distance_udf(self):
+        """Create UDF for haversine distance calculation"""
+        def haversine(lat1, lon1, lat2, lon2):
+            if any(x is None for x in [lat1, lon1, lat2, lon2]):
+                return None
                 
-                # Mark customers as assigned
-                for portfolio in portfolios_for_branch:
-                    for customer in portfolio.customers:
-                        assigned_customers.add(customer.ecn)
-        
-        # Return unassigned customers
-        unassigned_customers = [c for c in customers if c.ecn not in assigned_customers]
-        return portfolios, unassigned_customers
-    
-    def _create_portfolios_for_branch(self, branch: Branch, 
-                                    customers: List[Customer]) -> List[Portfolio]:
-        """Create multiple portfolios for a single branch if needed"""
-        portfolios = []
-        remaining_customers = customers.copy()
-        portfolio_counter = 1
-        
-        while len(remaining_customers) >= self.min_portfolio_size:
-            # Take up to max_portfolio_size customers
-            portfolio_customers = remaining_customers[:self.max_portfolio_size]
-            remaining_customers = remaining_customers[self.max_portfolio_size:]
+            # Convert to radians
+            lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
             
-            portfolio_id = f"{branch.branch_au}_P{portfolio_counter}"
-            portfolio = Portfolio(
-                portfolio_id=portfolio_id,
-                portfolio_type="in-market",
-                branch_au=branch.branch_au,
-                customers=portfolio_customers
-            )
-            portfolios.append(portfolio)
-            portfolio_counter += 1
-        
-        # If remaining customers are less than min but more than 0,
-        # try to distribute them to existing portfolios
-        if remaining_customers and portfolios:
-            self._redistribute_remaining_customers(portfolios, remaining_customers)
-        
-        return portfolios
-    
-    def _redistribute_remaining_customers(self, portfolios: List[Portfolio], 
-                                       remaining_customers: List[Customer]):
-        """Redistribute remaining customers to existing portfolios if possible"""
-        for customer in remaining_customers:
-            # Find portfolio with least customers that can accommodate one more
-            best_portfolio = None
-            min_size = float('inf')
+            # Haversine formula
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+            c = 2 * math.asin(math.sqrt(a))
             
-            for portfolio in portfolios:
-                if len(portfolio.customers) < self.max_portfolio_size and len(portfolio.customers) < min_size:
-                    best_portfolio = portfolio
-                    min_size = len(portfolio.customers)
+            # Radius of earth in miles
+            r = 3956
+            return c * r
             
-            if best_portfolio:
-                best_portfolio.customers.append(customer)
+        return udf(haversine, DoubleType())
     
-    def create_centralized_portfolios(self, unassigned_customers: List[Customer]) -> List[Portfolio]:
-        """Create centralized portfolios from unassigned customers"""
-        portfolios = []
-        remaining_customers = unassigned_customers.copy()
-        portfolio_counter = 1
+    def create_customer_branch_distances(self, customer_df: DataFrame, branch_df: DataFrame) -> DataFrame:
+        """Create a DataFrame with distances between all customers and branches"""
+        haversine_udf = self.haversine_distance_udf()
         
-        while len(remaining_customers) >= self.min_portfolio_size:
-            # Take up to max_portfolio_size customers
-            portfolio_customers = remaining_customers[:self.max_portfolio_size]
-            remaining_customers = remaining_customers[self.max_portfolio_size:]
-            
-            portfolio_id = f"CENTRALIZED_P{portfolio_counter}"
-            portfolio = Portfolio(
-                portfolio_id=portfolio_id,
-                portfolio_type="centralized",
-                branch_au=None,
-                customers=portfolio_customers
+        # Cross join customers with branches
+        customer_branch = customer_df.crossJoin(branch_df.select(
+            col("BRANCH_AU"),
+            col("BRANCH_LAT_NUM").alias("BRANCH_LAT"),
+            col("BRANCH_LON_NUM").alias("BRANCH_LON")
+        ))
+        
+        # Calculate distances
+        distances_df = customer_branch.withColumn(
+            "distance_miles",
+            haversine_udf(
+                col("LAT_NUM"), col("LON_NUM"),
+                col("BRANCH_LAT"), col("BRANCH_LON")
             )
-            portfolios.append(portfolio)
-            portfolio_counter += 1
-        
-        # Handle remaining customers by distributing to existing centralized portfolios
-        if remaining_customers and portfolios:
-            self._redistribute_remaining_customers(portfolios, remaining_customers)
-        elif remaining_customers and not portfolios:
-            # If we have customers but no portfolios (less than min_size), 
-            # create one portfolio anyway
-            portfolio_id = f"CENTRALIZED_P1"
-            portfolio = Portfolio(
-                portfolio_id=portfolio_id,
-                portfolio_type="centralized",
-                branch_au=None,
-                customers=remaining_customers
-            )
-            portfolios.append(portfolio)
-        
-        return portfolios
-    
-    def optimize_portfolios(self, customer_data: pd.DataFrame, 
-                          branch_data: pd.DataFrame) -> Tuple[List[Portfolio], Dict]:
-        """
-        Main optimization function
-        Returns: (all_portfolios, summary_stats)
-        """
-        # Convert data to objects
-        customers = [
-            Customer(
-                ecn=row['ECN'],
-                lat=row['LAT_NUM'],
-                lon=row['LON_NUM'],
-                billing_street=row['BILLINGSTREET'],
-                billing_city=row['BILLINGCITY'],
-                billing_state=row['BILLINGSTATE']
-            )
-            for _, row in customer_data.iterrows()
-        ]
-        
-        branches = [
-            Branch(
-                branch_au=row['BRANCH_AU'],
-                lat=row['BRANCH_LAT_NUM'],
-                lon=row['BRANCH_LON_NUM']
-            )
-            for _, row in branch_data.iterrows()
-        ]
-        
-        # Create in-market portfolios
-        in_market_portfolios, unassigned_customers = self.create_in_market_portfolios(
-            branches, customers
+        ).filter(
+            col("distance_miles") <= self.proximity_miles
         )
         
+        return distances_df
+    
+    def create_in_market_portfolios(self, customer_df: DataFrame, branch_df: DataFrame) -> DataFrame:
+        """Create in-market portfolios"""
+        # Get customer-branch distances within proximity
+        distances_df = self.create_customer_branch_distances(customer_df, branch_df)
+        
+        # Count customers per branch
+        branch_customer_counts = distances_df.groupBy("BRANCH_AU").agg(
+            count("ECN").alias("customer_count")
+        ).filter(
+            col("customer_count") >= self.min_portfolio_size
+        )
+        
+        # Get eligible branches
+        eligible_branches = branch_customer_counts.select("BRANCH_AU").collect()
+        eligible_branch_list = [row["BRANCH_AU"] for row in eligible_branches]
+        
+        # Create portfolios for eligible branches
+        in_market_customers = distances_df.filter(
+            col("BRANCH_AU").isin(eligible_branch_list)
+        )
+        
+        # Add row numbers to create portfolio assignments
+        window_spec = Window.partitionBy("BRANCH_AU").orderBy("ECN")
+        
+        portfolios_df = in_market_customers.withColumn(
+            "row_num", row_number().over(window_spec)
+        ).withColumn(
+            "portfolio_num", 
+            ((col("row_num") - 1) / self.max_portfolio_size).cast("int") + 1
+        ).withColumn(
+            "portfolio_id", 
+            concat(col("BRANCH_AU"), lit("_P"), col("portfolio_num"))
+        ).withColumn(
+            "portfolio_type", lit("in-market")
+        ).select(
+            "ECN", "LAT_NUM", "LON_NUM", "BILLINGSTREET", "BILLINGCITY", "BILLINGSTATE",
+            "BRANCH_AU", "portfolio_id", "portfolio_type"
+        )
+        
+        return portfolios_df
+    
+    def create_centralized_portfolios(self, customer_df: DataFrame, 
+                                    assigned_customers_df: DataFrame) -> DataFrame:
+        """Create centralized portfolios from unassigned customers"""
+        # Get unassigned customers
+        unassigned_customers = customer_df.join(
+            assigned_customers_df.select("ECN"), 
+            on="ECN", 
+            how="left_anti"
+        )
+        
+        # Add row numbers for portfolio assignment
+        window_spec = Window.orderBy("ECN")
+        
+        centralized_df = unassigned_customers.withColumn(
+            "row_num", row_number().over(window_spec)
+        ).withColumn(
+            "portfolio_num", 
+            ((col("row_num") - 1) / self.max_portfolio_size).cast("int") + 1
+        ).withColumn(
+            "portfolio_id", 
+            concat(lit("CENTRALIZED_P"), col("portfolio_num"))
+        ).withColumn(
+            "portfolio_type", lit("centralized")
+        ).withColumn(
+            "BRANCH_AU", lit(None).cast("string")
+        ).select(
+            "ECN", "LAT_NUM", "LON_NUM", "BILLINGSTREET", "BILLINGCITY", "BILLINGSTATE",
+            "BRANCH_AU", "portfolio_id", "portfolio_type"
+        )
+        
+        return centralized_df
+    
+    def optimize_portfolios(self, customer_df: DataFrame, branch_df: DataFrame) -> DataFrame:
+        """Main optimization function"""
+        # Create in-market portfolios
+        in_market_portfolios = self.create_in_market_portfolios(customer_df, branch_df)
+        
         # Create centralized portfolios
-        centralized_portfolios = self.create_centralized_portfolios(unassigned_customers)
+        centralized_portfolios = self.create_centralized_portfolios(
+            customer_df, in_market_portfolios
+        )
         
         # Combine all portfolios
-        all_portfolios = in_market_portfolios + centralized_portfolios
+        all_portfolios = in_market_portfolios.union(centralized_portfolios)
         
-        # Generate summary statistics
-        summary_stats = self._generate_summary_stats(all_portfolios, customers, branches)
-        
-        return all_portfolios, summary_stats
+        return all_portfolios
     
-    def _generate_summary_stats(self, portfolios: List[Portfolio], 
-                               customers: List[Customer], branches: List[Branch]) -> Dict:
-        """Generate summary statistics"""
-        in_market_portfolios = [p for p in portfolios if p.portfolio_type == "in-market"]
-        centralized_portfolios = [p for p in portfolios if p.portfolio_type == "centralized"]
+    def get_portfolio_summary(self, portfolios_df: DataFrame) -> DataFrame:
+        """Generate portfolio summary statistics"""
+        summary = portfolios_df.groupBy("portfolio_id", "portfolio_type", "BRANCH_AU").agg(
+            count("ECN").alias("customer_count")
+        ).orderBy("portfolio_type", "portfolio_id")
         
-        total_customers_assigned = sum(len(p.customers) for p in portfolios)
-        
-        portfolio_sizes = [len(p.customers) for p in portfolios]
-        
-        stats = {
-            'total_customers': len(customers),
-            'total_branches': len(branches),
-            'total_portfolios': len(portfolios),
-            'in_market_portfolios': len(in_market_portfolios),
-            'centralized_portfolios': len(centralized_portfolios),
-            'customers_assigned': total_customers_assigned,
-            'customers_unassigned': len(customers) - total_customers_assigned,
-            'avg_portfolio_size': np.mean(portfolio_sizes) if portfolio_sizes else 0,
-            'min_portfolio_size': min(portfolio_sizes) if portfolio_sizes else 0,
-            'max_portfolio_size': max(portfolio_sizes) if portfolio_sizes else 0,
-            'portfolio_size_std': np.std(portfolio_sizes) if portfolio_sizes else 0
-        }
-        
-        return stats
-    
-    def export_results_to_dataframe(self, portfolios: List[Portfolio]) -> pd.DataFrame:
-        """Export portfolio results to a DataFrame"""
-        results = []
-        
-        for portfolio in portfolios:
-            for customer in portfolio.customers:
-                results.append({
-                    'Portfolio_ID': portfolio.portfolio_id,
-                    'Portfolio_Type': portfolio.portfolio_type,
-                    'Branch_AU': portfolio.branch_au,
-                    'ECN': customer.ecn,
-                    'Customer_LAT': customer.lat,
-                    'Customer_LON': customer.lon,
-                    'Billing_Street': customer.billing_street,
-                    'Billing_City': customer.billing_city,
-                    'Billing_State': customer.billing_state,
-                    'Portfolio_Size': len(portfolio.customers)
-                })
-        
-        return pd.DataFrame(results)
+        return summary
 
-# Example usage function
-def run_portfolio_optimization(customer_df: pd.DataFrame, branch_df: pd.DataFrame):
+# Usage function
+def run_spark_portfolio_optimization(spark: SparkSession, customer_df: DataFrame, branch_df: DataFrame):
     """
-    Main function to run the portfolio optimization
+    Run portfolio optimization using Spark DataFrames
     
     Args:
-        customer_df: DataFrame with columns ['ECN', 'LAT_NUM', 'LON_NUM', 'BILLINGSTREET', 'BILLINGCITY', 'BILLINGSTATE']
-        branch_df: DataFrame with columns ['BRANCH_AU', 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM']
+        spark: SparkSession
+        customer_df: Spark DataFrame with customer data
+        branch_df: Spark DataFrame with branch data
     
     Returns:
-        results_df: DataFrame with portfolio assignments
-        summary: Dictionary with summary statistics
+        portfolios_df: DataFrame with portfolio assignments
+        summary_df: DataFrame with portfolio summaries
     """
     
     # Initialize optimizer
-    optimizer = PortfolioOptimizer(
+    optimizer = SparkPortfolioOptimizer(
+        spark=spark,
         min_portfolio_size=220,
         max_portfolio_size=250,
         proximity_miles=20.0
     )
     
     # Run optimization
-    portfolios, summary = optimizer.optimize_portfolios(customer_df, branch_df)
+    portfolios_df = optimizer.optimize_portfolios(customer_df, branch_df)
     
-    # Export results
-    results_df = optimizer.export_results_to_dataframe(portfolios)
+    # Get summary
+    summary_df = optimizer.get_portfolio_summary(portfolios_df)
     
-    # Print summary
-    print("Portfolio Optimization Summary:")
-    print("=" * 40)
-    for key, value in summary.items():
-        print(f"{key.replace('_', ' ').title()}: {value}")
+    # Show summary
+    print("Portfolio Summary:")
+    summary_df.show(100, truncate=False)
     
-    return results_df, summary
+    # Overall statistics
+    total_stats = portfolios_df.agg(
+        count("ECN").alias("total_customers"),
+        countDistinct("portfolio_id").alias("total_portfolios")
+    )
+    
+    type_stats = portfolios_df.groupBy("portfolio_type").agg(
+        countDistinct("portfolio_id").alias("portfolio_count"),
+        count("ECN").alias("customer_count")
+    )
+    
+    print("\nOverall Statistics:")
+    total_stats.show()
+    
+    print("\nBy Portfolio Type:")
+    type_stats.show()
+    
+    return portfolios_df, summary_df
 
-# Example of how to use:
+# Example usage:
 """
-# Load your data
-customer_df = pd.read_csv('customer_data.csv')
-branch_df = pd.read_csv('branch_data.csv')
+# Initialize Spark
+spark = SparkSession.builder.appName("PortfolioOptimization").getOrCreate()
+
+# Load data (assuming you have the DataFrames)
+customer_df = spark.read.table("your_customer_table")
+branch_df = spark.read.table("your_branch_table")
 
 # Run optimization
-results_df, summary = run_portfolio_optimization(customer_df, branch_df)
+portfolios_df, summary_df = run_spark_portfolio_optimization(spark, customer_df, branch_df)
 
 # Save results
-results_df.to_csv('portfolio_assignments.csv', index=False)
-
-# View portfolio distribution
-portfolio_summary = results_df.groupby(['Portfolio_ID', 'Portfolio_Type', 'Branch_AU']).agg({
-    'ECN': 'count'
-}).rename(columns={'ECN': 'Customer_Count'}).reset_index()
-
-print(portfolio_summary)
+portfolios_df.write.mode("overwrite").saveAsTable("portfolio_assignments")
+summary_df.write.mode("overwrite").saveAsTable("portfolio_summary")
 """
