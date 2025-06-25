@@ -1,292 +1,293 @@
 import pandas as pd
 import numpy as np
+from sklearn.cluster import KMeans
 from math import radians, cos, sin, asin, sqrt
-from collections import defaultdict
 
-class BranchCustomerAnalyzer:
-    def __init__(self):
-        self.customer_portfolios = {}
-        self.qualifying_branches = []
-        
-    def haversine_distance(self, lat1, lon1, lat2, lon2):
-        """Calculate distance between two points in miles"""
-        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-        c = 2 * asin(sqrt(a))
-        return 3959 * c  # Earth's radius in miles
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculate haversine distance in miles between two points"""
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    return c * 3959  # Earth radius in miles
+
+def find_customers_within_radius(customer_df, branch_df, max_radius=20):
+    """Find customers within radius for each branch and determine minimum radius needed"""
+    eligible_branches = []
     
-    def optimize_cluster_radius(self, branch_lat, branch_lon, customer_data, 
-                              min_customers=200, max_customers=280, max_radius=20):
-        """
-        Find optimal radius and customer set for a branch
-        """
+    for _, branch in branch_df.iterrows():
         # Calculate distances to all customers
         distances = []
         customer_indices = []
         
-        for idx, customer in customer_data.iterrows():
-            distance = self.haversine_distance(
-                branch_lat, branch_lon,
+        for idx, customer in customer_df.iterrows():
+            dist = haversine_distance(
+                branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM'],
                 customer['LAT_NUM'], customer['LON_NUM']
             )
-            if distance <= max_radius:
-                distances.append(distance)
-                customer_indices.append(idx)
+            distances.append(dist)
+            customer_indices.append(idx)
         
-        if len(distances) < min_customers:
-            return None, [], []
+        # Sort by distance
+        sorted_data = sorted(zip(distances, customer_indices))
         
-        # Sort by distance and select customers within portfolio limits
-        sorted_indices = np.argsort(distances)
+        # Find minimum radius that gives at least 200 customers
+        min_radius = None
+        customers_in_radius = []
         
-        # Take minimum customers needed, up to maximum allowed
-        num_customers = min(len(distances), max_customers)
-        if num_customers < min_customers:
-            return None, [], []
+        for i, (dist, cust_idx) in enumerate(sorted_data):
+            if dist <= max_radius:
+                customers_in_radius.append((cust_idx, dist))
+                if len(customers_in_radius) >= 200:
+                    min_radius = dist
+                    break
         
-        # Get optimal customer set
-        selected_customers = []
-        selected_distances = []
-        
-        for i in range(num_customers):
-            idx = sorted_indices[i]
-            selected_customers.append(customer_indices[idx])
-            selected_distances.append(distances[idx])
-        
-        optimal_radius = max(selected_distances)
-        return optimal_radius, selected_customers, selected_distances
+        # If we have at least 200 customers within max_radius
+        if len(customers_in_radius) >= 200:
+            eligible_branches.append({
+                'branch_id': branch['BRANCH_AU'],
+                'branch_lat': branch['BRANCH_LAT_NUM'],
+                'branch_lon': branch['BRANCH_LON_NUM'],
+                'min_radius': min_radius,
+                'customers_in_radius': customers_in_radius,
+                'total_customers': len(customers_in_radius)
+            })
     
-    def analyze_branches(self, customer_df, branch_df, min_customers=200, 
-                        max_customers=280, max_radius=20):
-        """
-        Main analysis function
-        """
-        print(f"Analyzing {len(branch_df)} branches for customer portfolios...")
-        print(f"Portfolio size: {min_customers}-{max_customers} customers")
-        print(f"Maximum radius: {max_radius} miles")
+    return eligible_branches
+
+def create_portfolios(eligible_branches, customer_df, max_portfolio_size=280):
+    """Create customer portfolios for each eligible branch"""
+    portfolios = []
+    
+    for branch in eligible_branches:
+        customers_data = branch['customers_in_radius']
         
-        self.qualifying_branches = []
-        
-        for idx, branch in branch_df.iterrows():
-            branch_id = branch['BRANCH_AU']
-            branch_lat = branch['BRANCH_LAT_NUM']
-            branch_lon = branch['BRANCH_LON_NUM']
+        # If customers <= max_portfolio_size, create single portfolio
+        if len(customers_data) <= max_portfolio_size:
+            customer_list = [cust_idx for cust_idx, _ in customers_data]
+            portfolios.append({
+                'branch_id': branch['branch_id'],
+                'branch_lat': branch['branch_lat'],
+                'branch_lon': branch['branch_lon'],
+                'portfolio_id': f"{branch['branch_id']}_P1",
+                'customers': customer_list,
+                'customer_count': len(customer_list),
+                'avg_distance': np.mean([dist for _, dist in customers_data])
+            })
+        else:
+            # Multiple portfolios needed - use clustering
+            n_portfolios = (len(customers_data) + max_portfolio_size - 1) // max_portfolio_size
             
-            # Find optimal portfolio for this branch
-            optimal_radius, customer_indices, distances = self.optimize_cluster_radius(
-                branch_lat, branch_lon, customer_df, 
-                min_customers, max_customers, max_radius
+            # Get customer coordinates for clustering
+            customer_coords = []
+            customer_indices = []
+            for cust_idx, _ in customers_data:
+                customer_coords.append([
+                    customer_df.loc[cust_idx, 'LAT_NUM'],
+                    customer_df.loc[cust_idx, 'LON_NUM']
+                ])
+                customer_indices.append(cust_idx)
+            
+            # Cluster customers
+            kmeans = KMeans(n_clusters=n_portfolios, random_state=42, n_init=10)
+            clusters = kmeans.fit_predict(customer_coords)
+            
+            # Create portfolios from clusters
+            for i in range(n_portfolios):
+                cluster_customers = [customer_indices[j] for j in range(len(clusters)) if clusters[j] == i]
+                
+                # Calculate average distance for this portfolio
+                avg_dist = np.mean([
+                    haversine_distance(
+                        branch['branch_lat'], branch['branch_lon'],
+                        customer_df.loc[cust_idx, 'LAT_NUM'], 
+                        customer_df.loc[cust_idx, 'LON_NUM']
+                    ) for cust_idx in cluster_customers
+                ])
+                
+                portfolios.append({
+                    'branch_id': branch['branch_id'],
+                    'branch_lat': branch['branch_lat'],
+                    'branch_lon': branch['branch_lon'],
+                    'portfolio_id': f"{branch['branch_id']}_P{i+1}",
+                    'customers': cluster_customers,
+                    'customer_count': len(cluster_customers),
+                    'avg_distance': avg_dist
+                })
+    
+    return portfolios
+
+def resolve_overlapping_assignments(portfolios, customer_df):
+    """Ensure each customer is assigned to only one portfolio (closest branch)"""
+    customer_assignments = {}
+    
+    # Collect all potential assignments
+    for portfolio in portfolios:
+        for cust_idx in portfolio['customers']:
+            if cust_idx not in customer_assignments:
+                customer_assignments[cust_idx] = []
+            
+            distance = haversine_distance(
+                portfolio['branch_lat'], portfolio['branch_lon'],
+                customer_df.loc[cust_idx, 'LAT_NUM'], 
+                customer_df.loc[cust_idx, 'LON_NUM']
             )
             
-            if optimal_radius is not None:
-                branch_info = {
-                    'BRANCH_AU': branch_id,
-                    'BRANCH_LAT_NUM': branch_lat,
-                    'BRANCH_LON_NUM': branch_lon,
-                    'optimal_radius': optimal_radius,
-                    'customer_count': len(customer_indices),
-                    'avg_distance': np.mean(distances),
-                    'max_distance': max(distances),
-                    'customer_indices': customer_indices,
-                    'customer_distances': distances
-                }
-                self.qualifying_branches.append(branch_info)
-        
-        print(f"Found {len(self.qualifying_branches)} qualifying branches")
-        return self.qualifying_branches
-    
-    def resolve_conflicts(self, customer_df):
-        """
-        Assign customers to closest branch when they're in multiple portfolios
-        """
-        print("Resolving customer assignment conflicts...")
-        
-        customer_assignments = {}
-        
-        # Find best assignment for each customer
-        for branch in self.qualifying_branches:
-            branch_id = branch['BRANCH_AU']
-            for i, customer_idx in enumerate(branch['customer_indices']):
-                distance = branch['customer_distances'][i]
-                
-                if customer_idx not in customer_assignments:
-                    customer_assignments[customer_idx] = (branch_id, distance)
-                else:
-                    current_branch, current_distance = customer_assignments[customer_idx]
-                    if distance < current_distance:
-                        customer_assignments[customer_idx] = (branch_id, distance)
-        
-        # Create final portfolios
-        self.customer_portfolios = defaultdict(list)
-        
-        for customer_idx, (branch_id, distance) in customer_assignments.items():
-            customer_info = customer_df.iloc[customer_idx].to_dict()
-            customer_info['distance_to_branch'] = distance
-            self.customer_portfolios[branch_id].append(customer_info)
-        
-        # Update branch statistics
-        for branch in self.qualifying_branches:
-            branch_id = branch['BRANCH_AU']
-            final_customers = self.customer_portfolios[branch_id]
-            branch['final_customer_count'] = len(final_customers)
-            if final_customers:
-                branch['final_avg_distance'] = np.mean([c['distance_to_branch'] for c in final_customers])
-                branch['final_max_distance'] = max([c['distance_to_branch'] for c in final_customers])
-            else:
-                branch['final_avg_distance'] = 0
-                branch['final_max_distance'] = 0
-        
-        # Remove branches that don't meet minimum after conflict resolution
-        min_customers = 200
-        self.qualifying_branches = [b for b in self.qualifying_branches 
-                                  if b['final_customer_count'] >= min_customers]
-        
-        print(f"After conflict resolution: {len(self.qualifying_branches)} branches qualify")
-        print(f"Total customers assigned: {len(customer_assignments)}")
-    
-    def get_results_summary(self):
-        """Return analysis summary as DataFrame"""
-        if not self.qualifying_branches:
-            return pd.DataFrame()
-        
-        summary_data = []
-        for branch in self.qualifying_branches:
-            summary_data.append({
-                'Branch_ID': branch['BRANCH_AU'],
-                'Branch_Lat': branch['BRANCH_LAT_NUM'],
-                'Branch_Lon': branch['BRANCH_LON_NUM'],
-                'Optimal_Radius_Miles': round(branch['optimal_radius'], 2),
-                'Portfolio_Size': branch['final_customer_count'],
-                'Avg_Distance_Miles': round(branch['final_avg_distance'], 2),
-                'Max_Distance_Miles': round(branch['final_max_distance'], 2)
+            customer_assignments[cust_idx].append({
+                'portfolio_id': portfolio['portfolio_id'],
+                'branch_id': portfolio['branch_id'],
+                'distance': distance
             })
-        
-        return pd.DataFrame(summary_data)
     
-    def get_customer_portfolios(self):
-        """Return customer portfolios as DataFrame"""
-        portfolio_data = []
-        
-        for branch_id, customers in self.customer_portfolios.items():
-            for customer in customers:
-                portfolio_data.append({
-                    'Branch_ID': branch_id,
-                    'Customer_ECN': customer['ECN'],
-                    'Customer_Lat': customer['LAT_NUM'],
-                    'Customer_Lon': customer['LON_NUM'],
-                    'Distance_Miles': round(customer['distance_to_branch'], 2),
-                    'Billing_Street': customer['BILLINGSTREET'],
-                    'Billing_City': customer['BILLINGCITY'],
-                    'Billing_State': customer['BILLINGSTATE']
-                })
-        
-        return pd.DataFrame(portfolio_data)
+    # Assign each customer to closest branch only
+    final_assignments = {}
+    for cust_idx, options in customer_assignments.items():
+        best_option = min(options, key=lambda x: x['distance'])
+        final_assignments[cust_idx] = best_option
     
-    def analyze(self, customer_df, branch_df, min_customers=200, max_customers=280, max_radius=20):
-        """
-        Complete analysis pipeline
-        """
-        # Run branch analysis
-        self.analyze_branches(customer_df, branch_df, min_customers, max_customers, max_radius)
+    # Update portfolios to remove duplicates
+    updated_portfolios = []
+    for portfolio in portfolios:
+        assigned_customers = [
+            cust_idx for cust_idx in portfolio['customers']
+            if final_assignments.get(cust_idx, {}).get('portfolio_id') == portfolio['portfolio_id']
+        ]
         
-        if not self.qualifying_branches:
-            print("No branches qualify for hiring bankers!")
-            return None, None
-        
-        # Resolve conflicts
-        self.resolve_conflicts(customer_df)
-        
-        # Print summary
-        total_customers = sum(len(customers) for customers in self.customer_portfolios.values())
-        avg_radius = np.mean([b['optimal_radius'] for b in self.qualifying_branches])
-        avg_portfolio_size = total_customers / len(self.qualifying_branches) if self.qualifying_branches else 0
-        
-        print(f"\nANALYSIS COMPLETE")
-        print(f"Qualifying branches: {len(self.qualifying_branches)}")
-        print(f"Total customers assigned: {total_customers}")
-        print(f"Average portfolio size: {avg_portfolio_size:.0f}")
-        print(f"Average optimal radius: {avg_radius:.2f} miles")
-        
-        # Return results as DataFrames
-        return self.get_results_summary(), self.get_customer_portfolios()
+        if assigned_customers:  # Only keep portfolios with customers
+            updated_portfolio = {
+                **portfolio,
+                'customers': assigned_customers,
+                'customer_count': len(assigned_customers)
+            }
+            # Recalculate average distance
+            updated_portfolio['avg_distance'] = np.mean([
+                haversine_distance(
+                    portfolio['branch_lat'], portfolio['branch_lon'],
+                    customer_df.loc[cust_idx, 'LAT_NUM'], 
+                    customer_df.loc[cust_idx, 'LON_NUM']
+                ) for cust_idx in assigned_customers
+            ])
+            updated_portfolios.append(updated_portfolio)
+    
+    return updated_portfolios
 
-# Usage example
-def analyze_branch_customers(customer_df, branch_df, min_customers=200, max_customers=280, max_radius=20):
-    """
-    Convenience function for quick analysis
-    
-    Parameters:
-    - customer_df: DataFrame with columns ['ECN', 'LAT_NUM', 'LON_NUM', 'BILLINGSTREET', 'BILLINGCITY', 'BILLINGSTATE']
-    - branch_df: DataFrame with columns ['BRANCH_AU', 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM']
-    - min_customers: Minimum customers per portfolio (default: 200)
-    - max_customers: Maximum customers per portfolio (default: 280)
-    - max_radius: Maximum service radius in miles (default: 20)
-    
-    Returns:
-    - branch_summary_df: Summary of qualifying branches
-    - customer_portfolios_df: Customer assignments to branches
-    """
-    analyzer = BranchCustomerAnalyzer()
-    return analyzer.analyze(customer_df, branch_df, min_customers, max_customers, max_radius)
+# Main execution
+print("Analyzing branches and customers...")
 
-# Example usage:
-if __name__ == "__main__":
-    # Example with sample data
-    print("Creating sample data for demonstration...")
-    
-    # Sample customer data
-    np.random.seed(42)
-    n_customers = 1000
-    base_lat, base_lon = 40.7128, -74.0060
-    
-    customer_data = []
-    for i in range(n_customers):
-        customer_data.append({
-            'ECN': f'CUST{i+1:04d}',
-            'LAT_NUM': base_lat + np.random.normal(0, 0.3),
-            'LON_NUM': base_lon + np.random.normal(0, 0.3),
-            'BILLINGSTREET': f'{np.random.randint(1, 999)} Main St',
-            'BILLINGCITY': f'City{np.random.randint(1, 10)}',
-            'BILLINGSTATE': np.random.choice(['NY', 'NJ', 'CT'])
+# Find eligible branches
+eligible_branches = find_customers_within_radius(customer_df, branch_df)
+
+print(f"\nFound {len(eligible_branches)} eligible branches:")
+for branch in eligible_branches:
+    print(f"Branch {branch['branch_id']}: {branch['total_customers']} customers within {branch['min_radius']:.1f} miles")
+
+# Create portfolios
+portfolios = create_portfolios(eligible_branches, customer_df)
+
+print(f"\nBEFORE resolving overlaps: {len(portfolios)} portfolios")
+
+# Resolve overlapping assignments to ensure each customer is in only one portfolio
+portfolios = resolve_overlapping_assignments(portfolios, customer_df)
+
+print(f"AFTER resolving overlaps: {len(portfolios)} portfolios")
+
+print(f"\nFinal portfolios:")
+for portfolio in portfolios:
+    print(f"Portfolio {portfolio['portfolio_id']}: {portfolio['customer_count']} customers, avg distance: {portfolio['avg_distance']:.1f} miles")
+
+# Create summary DataFrames
+branch_summary = pd.DataFrame([
+    {
+        'Branch_ID': branch['branch_id'],
+        'Branch_Lat': branch['branch_lat'],
+        'Branch_Lon': branch['branch_lon'],
+        'Min_Radius_Miles': round(branch['min_radius'], 2),
+        'Total_Customers_In_Radius': branch['total_customers'],
+        'Final_Portfolios': len([p for p in portfolios if p['branch_id'] == branch['branch_id']])
+    }
+    for branch in eligible_branches
+])
+
+portfolio_summary = pd.DataFrame([
+    {
+        'Portfolio_ID': p['portfolio_id'],
+        'Branch_ID': p['branch_id'],
+        'Customer_Count': p['customer_count'],
+        'Avg_Distance_Miles': round(p['avg_distance'], 2)
+    }
+    for p in portfolios
+])
+
+# Create detailed customer assignments
+customer_assignments = []
+for portfolio in portfolios:
+    for cust_idx in portfolio['customers']:
+        distance = haversine_distance(
+            portfolio['branch_lat'], portfolio['branch_lon'],
+            customer_df.loc[cust_idx, 'LAT_NUM'], 
+            customer_df.loc[cust_idx, 'LON_NUM']
+        )
+        customer_assignments.append({
+            'ECN': customer_df.loc[cust_idx, 'ECN'],
+            'Customer_Lat': customer_df.loc[cust_idx, 'LAT_NUM'],
+            'Customer_Lon': customer_df.loc[cust_idx, 'LON_NUM'],
+            'Billing_Street': customer_df.loc[cust_idx, 'BILLINGSTREET'],
+            'Billing_City': customer_df.loc[cust_idx, 'BILLINGCITY'],
+            'Billing_State': customer_df.loc[cust_idx, 'BILLINGSTATE'],
+            'Portfolio_ID': portfolio['portfolio_id'],
+            'Branch_ID': portfolio['branch_id'],
+            'Distance_Miles': round(distance, 2)
         })
-    
-    customer_df = pd.DataFrame(customer_data)
-    
-    # Sample branch data
-    branch_data = []
-    for i in range(15):
-        branch_data.append({
-            'BRANCH_AU': f'BR{i+1:03d}',
-            'BRANCH_LAT_NUM': base_lat + np.random.normal(0, 0.2),
-            'BRANCH_LON_NUM': base_lon + np.random.normal(0, 0.2)
-        })
-    
-    branch_df = pd.DataFrame(branch_data)
-    
-    # Run analysis
-    print(f"Sample data: {len(customer_df)} customers, {len(branch_df)} branches")
-    branch_summary, customer_portfolios = analyze_branch_customers(customer_df, branch_df)
-    
-    if branch_summary is not None:
-        print("\nBranch Summary:")
-        print(branch_summary)
-        print(f"\nCustomer Portfolios shape: {customer_portfolios.shape}")
-        print("First few portfolio assignments:")
-        print(customer_portfolios.head())
 
-# Simple usage with your DataFrames
-branch_summary, customer_portfolios = analyze_branch_customers(
-    customer_df,  # Your customer DataFrame
-    branch_df     # Your branch DataFrame
-)
+customer_assignment_df = pd.DataFrame(customer_assignments)
 
-# Or with custom parameters
-branch_summary, customer_portfolios = analyze_branch_customers(
-    customer_df, 
-    branch_df,
-    min_customers=200,
-    max_customers=280,
-    max_radius=20
-)
+# Validation: Check for duplicate customer assignments
+duplicate_customers = customer_assignment_df.groupby('ECN').size()
+duplicates = duplicate_customers[duplicate_customers > 1]
+
+print(f"\n=== VALIDATION ===")
+print(f"Total unique customers assigned: {customer_assignment_df['ECN'].nunique()}")
+print(f"Total assignment records: {len(customer_assignment_df)}")
+print(f"Duplicate assignments: {len(duplicates)}")
+
+if len(duplicates) > 0:
+    print("WARNING: Found duplicate customer assignments!")
+    print(duplicates.head())
+else:
+    print("✓ No duplicate assignments - each customer in exactly one portfolio")
+
+print(f"\n=== SUMMARY ===")
+print(f"Eligible branches: {len(eligible_branches)}")
+print(f"Total portfolios: {len(portfolios)}")
+print(f"Total customers assigned: {len(customer_assignments)}")
+print(f"Bankers to hire: {len(portfolios)}")
+
+# Display results
+print("\n=== BRANCH SUMMARY ===")
+print(branch_summary.to_string(index=False))
+
+print("\n=== PORTFOLIO SUMMARY ===")
+print(portfolio_summary.to_string(index=False))
+
+print("\n=== SAMPLE CUSTOMER ASSIGNMENTS ===")
+print(customer_assignment_df.head(10).to_string(index=False))
+
+# Additional analytics
+print("\n=== PORTFOLIO SIZE DISTRIBUTION ===")
+portfolio_sizes = portfolio_summary['Customer_Count'].describe()
+print(portfolio_sizes)
+
+print("\n=== DISTANCE ANALYTICS ===")
+distance_stats = customer_assignment_df['Distance_Miles'].describe()
+print(distance_stats)
+
+print(f"\nCustomers within 5 miles: {len(customer_assignment_df[customer_assignment_df['Distance_Miles'] <= 5])}")
+print(f"Customers within 10 miles: {len(customer_assignment_df[customer_assignment_df['Distance_Miles'] <= 10])}")
+print(f"Customers within 15 miles: {len(customer_assignment_df[customer_assignment_df['Distance_Miles'] <= 15])}")
+print(f"Customers within 20 miles: {len(customer_assignment_df[customer_assignment_df['Distance_Miles'] <= 20])}")
+
+# Export results (optional)
+# branch_summary.to_csv('branch_summary.csv', index=False)
+# portfolio_summary.to_csv('portfolio_summary.csv', index=False)
+# customer_assignment_df.to_csv('customer_assignments.csv', index=False)
