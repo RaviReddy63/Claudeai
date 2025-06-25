@@ -1,13 +1,4 @@
-def tag_customers_with_nearest_au(portfolios: Dict, branches: pd.DataFrame) -> Dict:
-    """
-    Tag customers in In-Market portfolios with their nearest AU branch.
-    This adds nearest_au and distance_to_nearest_au columns to customer data.
-    """
-    print(f"Tagging customers with nearest AU...")
-    
-    updated_portfolios = portfolios.copy()
-    
-    forimport pandas as pd
+import pandas as pd
 import numpy as np
 from math import radians, cos, sin, asin, sqrt
 from typing import List, Dict, Tuple, Optional
@@ -60,8 +51,6 @@ def validate_customer_data(customers_df: pd.DataFrame) -> pd.DataFrame:
     print(f"Customers after removing missing coordinates: {len(customers)}")
     
     customers['assigned'] = False
-    customers['nearest_branch'] = None
-    customers['distance_to_nearest'] = float('inf')
     
     return customers
 
@@ -91,6 +80,133 @@ def validate_branch_data(branches_df: pd.DataFrame) -> pd.DataFrame:
     print(f"Branches after removing missing coordinates: {len(branches)}")
     
     return branches
+
+def find_customers_near_branch(customers: pd.DataFrame, branch_lat: float, branch_lon: float, 
+                              radius_miles: float = 20) -> List[int]:
+    """
+    Find customers within specified radius of a branch.
+    Returns list of customer indices.
+    """
+    nearby_customers = []
+    
+    try:
+        # Debug: Check if customers DataFrame is empty
+        if customers.empty:
+            print("Warning: customers DataFrame is empty")
+            return nearby_customers
+            
+        # Debug: Check if 'assigned' column exists
+        if 'assigned' not in customers.columns:
+            print("Warning: 'assigned' column not found in customers DataFrame")
+            return nearby_customers
+        
+        for idx, customer in customers.iterrows():
+            if not customer['assigned']:  # Only consider unassigned customers
+                try:
+                    distance = haversine_distance(
+                        customer['LAT_NUM'], customer['LON_NUM'],
+                        branch_lat, branch_lon
+                    )
+                    if distance <= radius_miles:
+                        nearby_customers.append(idx)
+                except Exception as e:
+                    print(f"Error processing customer {idx}: {e}")
+                    continue
+    
+    except Exception as e:
+        print(f"Error in find_customers_near_branch: {e}")
+    
+    return nearby_customers
+
+def create_in_market_portfolios(customers: pd.DataFrame, branches: pd.DataFrame, 
+                               min_portfolio_size: int = 220, max_portfolio_size: int = 250,
+                               radius_miles: float = 20) -> Tuple[Dict, pd.DataFrame]:
+    """
+    Create in-market portfolios for branches that have sufficient customers nearby.
+    """
+    print(f"Creating in-market portfolios...")
+    portfolios = {}
+    customers_copy = customers.copy()
+    
+    # Debug: Check DataFrame states
+    print(f"Customers copy shape: {customers_copy.shape}")
+    print(f"Branches shape: {branches.shape}")
+    
+    # Calculate potential portfolio size for each branch
+    branch_potential = []
+    
+    try:
+        for idx, branch in branches.iterrows():
+            print(f"Processing branch {idx}: {branch['BRANCH_AU']}")
+            nearby_customers = find_customers_near_branch(
+                customers_copy, branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM'], radius_miles
+            )
+            branch_potential.append({
+                'branch_idx': idx,
+                'branch_id': branch['BRANCH_AU'],
+                'potential_customers': len(nearby_customers),
+                'customer_indices': nearby_customers
+            })
+            print(f"Branch {branch['BRANCH_AU']} has {len(nearby_customers)} potential customers")
+    
+    except Exception as e:
+        print(f"Error calculating branch potential: {e}")
+        return portfolios, customers_copy
+    
+    # Sort branches by potential customer count (descending) to prioritize high-density areas
+    branch_potential.sort(key=lambda x: x['potential_customers'], reverse=True)
+    
+    portfolio_id = 1
+    
+    try:
+        for branch_info in branch_potential:
+            if branch_info['potential_customers'] >= min_portfolio_size:
+                # Safely get branch row
+                try:
+                    branch_row = branches.loc[branch_info['branch_idx']]
+                except KeyError:
+                    print(f"Warning: Branch index {branch_info['branch_idx']} not found in branches DataFrame")
+                    continue
+                
+                # Get current nearby customers (some may have been assigned already)
+                nearby_customers = find_customers_near_branch(
+                    customers_copy, branch_row['BRANCH_LAT_NUM'], branch_row['BRANCH_LON_NUM'], radius_miles
+                )
+                
+                if len(nearby_customers) >= min_portfolio_size:
+                    # Take up to max_portfolio_size customers
+                    selected_customers = nearby_customers[:max_portfolio_size]
+                    
+                    # Debug: Check if selected customers exist in DataFrame
+                    valid_customers = [idx for idx in selected_customers if idx in customers_copy.index]
+                    if len(valid_customers) != len(selected_customers):
+                        print(f"Warning: Some selected customers not found in DataFrame")
+                        selected_customers = valid_customers
+                    
+                    if not selected_customers:
+                        continue
+                    
+                    # Mark customers as assigned
+                    customers_copy.loc[selected_customers, 'assigned'] = True
+                    
+                    # Create portfolio
+                    portfolios[f'IN_MARKET_{portfolio_id}'] = {
+                        'type': 'IN_MARKET',
+                        'branch_id': branch_info['branch_id'],
+                        'branch_lat': branch_row['BRANCH_LAT_NUM'],
+                        'branch_lon': branch_row['BRANCH_LON_NUM'],
+                        'customer_count': len(selected_customers),
+                        'customer_indices': selected_customers,
+                        'customers': customers_copy.loc[selected_customers].copy()
+                    }
+                    
+                    print(f"Created IN_MARKET_{portfolio_id} with {len(selected_customers)} customers")
+                    portfolio_id += 1
+    
+    except Exception as e:
+        print(f"Error creating in-market portfolios: {e}")
+    
+    return portfolios, customers_copy
 
 def optimize_customer_portfolio_assignments(portfolios: Dict, branches: pd.DataFrame) -> Dict:
     """
@@ -242,101 +358,10 @@ def optimize_customer_portfolio_assignments(portfolios: Dict, branches: pd.DataF
     
     return optimized_portfolios
 
-def create_in_market_portfolios(customers: pd.DataFrame, branches: pd.DataFrame, 
-                               min_portfolio_size: int = 220, max_portfolio_size: int = 250,
-                               radius_miles: float = 20) -> Tuple[Dict, pd.DataFrame]:
-    """
-    Create in-market portfolios for branches that have sufficient customers nearby.
-    """
-    print(f"Creating in-market portfolios...")
-    portfolios = {}
-    customers_copy = customers.copy()
-    
-    # Debug: Check DataFrame states
-    print(f"Customers copy shape: {customers_copy.shape}")
-    print(f"Branches shape: {branches.shape}")
-    
-    # Calculate potential portfolio size for each branch
-    branch_potential = []
-    
-    try:
-        for idx, branch in branches.iterrows():
-            print(f"Processing branch {idx}: {branch['BRANCH_AU']}")
-            nearby_customers = find_customers_near_branch(
-                customers_copy, branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM'], radius_miles
-            )
-            branch_potential.append({
-                'branch_idx': idx,
-                'branch_id': branch['BRANCH_AU'],
-                'potential_customers': len(nearby_customers),
-                'customer_indices': nearby_customers
-            })
-            print(f"Branch {branch['BRANCH_AU']} has {len(nearby_customers)} potential customers")
-    
-    except Exception as e:
-        print(f"Error calculating branch potential: {e}")
-        return portfolios, customers_copy
-    
-    # Sort branches by potential customer count (descending) to prioritize high-density areas
-    branch_potential.sort(key=lambda x: x['potential_customers'], reverse=True)
-    
-    portfolio_id = 1
-    
-    try:
-        for branch_info in branch_potential:
-            if branch_info['potential_customers'] >= min_portfolio_size:
-                # Safely get branch row
-                try:
-                    branch_row = branches.loc[branch_info['branch_idx']]
-                except KeyError:
-                    print(f"Warning: Branch index {branch_info['branch_idx']} not found in branches DataFrame")
-                    continue
-                
-                # Get current nearby customers (some may have been assigned already)
-                nearby_customers = find_customers_near_branch(
-                    customers_copy, branch_row['BRANCH_LAT_NUM'], branch_row['BRANCH_LON_NUM'], radius_miles
-                )
-                
-                if len(nearby_customers) >= min_portfolio_size:
-                    # Take up to max_portfolio_size customers
-                    selected_customers = nearby_customers[:max_portfolio_size]
-                    
-                    # Debug: Check if selected customers exist in DataFrame
-                    valid_customers = [idx for idx in selected_customers if idx in customers_copy.index]
-                    if len(valid_customers) != len(selected_customers):
-                        print(f"Warning: Some selected customers not found in DataFrame")
-                        selected_customers = valid_customers
-                    
-                    if not selected_customers:
-                        continue
-                    
-                    # Mark customers as assigned
-                    customers_copy.loc[selected_customers, 'assigned'] = True
-                    
-                    # Create portfolio
-                    portfolios[f'IN_MARKET_{portfolio_id}'] = {
-                        'type': 'IN_MARKET',
-                        'branch_id': branch_info['branch_id'],
-                        'branch_lat': branch_row['BRANCH_LAT_NUM'],
-                        'branch_lon': branch_row['BRANCH_LON_NUM'],
-                        'customer_count': len(selected_customers),
-                        'customer_indices': selected_customers,
-                        'customers': customers_copy.loc[selected_customers].copy()
-                    }
-                    
-                    print(f"Created IN_MARKET_{portfolio_id} with {len(selected_customers)} customers")
-                    portfolio_id += 1
-    
-    except Exception as e:
-        print(f"Error creating in-market portfolios: {e}")
-    
-    return portfolios, customers_copy
-
 def create_centralized_portfolios(unassigned_customers: pd.DataFrame, 
                                  min_portfolio_size: int = 220, max_portfolio_size: int = 250) -> Dict:
     """
     Create centralized portfolios from remaining unassigned customers.
-    This includes customers not near any branch and small groups from branches with insufficient customers.
     """
     print(f"Creating centralized portfolios...")
     portfolios = {}
@@ -348,23 +373,13 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
         
         print(f"Remaining unassigned customers: {len(remaining_indices)}")
         
-        # Separate customers by whether they have a nearest branch or not
-        customers_with_branch = remaining[remaining['nearest_branch'].notna()]
-        customers_without_branch = remaining[remaining['nearest_branch'].isna()]
-        
-        print(f"  - Customers with nearest branch (but in small groups): {len(customers_with_branch)}")
-        print(f"  - Customers without nearby branch: {len(customers_without_branch)}")
-        
-        # Combine all remaining customers for centralized portfolios
-        all_remaining = remaining.index.tolist()
-        
         portfolio_id = 1
         
         # Create portfolios of optimal size
-        while len(all_remaining) >= min_portfolio_size:
+        while len(remaining_indices) >= min_portfolio_size:
             # Take up to max_portfolio_size customers
-            portfolio_size = min(max_portfolio_size, len(all_remaining))
-            selected_indices = all_remaining[:portfolio_size]
+            portfolio_size = min(max_portfolio_size, len(remaining_indices))
+            selected_indices = remaining_indices[:portfolio_size]
             
             # Validate selected indices exist in DataFrame
             valid_indices = [idx for idx in selected_indices if idx in remaining.index]
@@ -383,23 +398,24 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
                 'customer_count': len(selected_indices),
                 'customer_indices': selected_indices,
                 'customers': remaining.loc[selected_indices].copy(),
-                'avg_distance_to_branch': None
+                'avg_distance_to_au': None
             }
             
             print(f"Created CENTRALIZED_{portfolio_id} with {len(selected_indices)} customers")
             
             # Remove assigned customers from remaining list
-            all_remaining = all_remaining[portfolio_size:]
+            remaining_indices = remaining_indices[portfolio_size:]
             portfolio_id += 1
         
         # Handle remaining customers (less than min_portfolio_size)
-        if all_remaining:
-            print(f"Handling {len(all_remaining)} remaining customers")
+        if remaining_indices:
+            print(f"Handling {len(remaining_indices)} remaining customers")
             # Try to distribute among existing centralized portfolios
             centralized_portfolios = [k for k in portfolios.keys() if k.startswith('CENTRALIZED')]
             
             if centralized_portfolios:
-                remaining_to_distribute = [idx for idx in all_remaining if idx in remaining.index]
+                # Instead of adding one by one, rebuild portfolios with additional customers
+                remaining_to_distribute = [idx for idx in remaining_indices if idx in remaining.index]
                 
                 for i, customer_idx in enumerate(remaining_to_distribute):
                     # Find a centralized portfolio with space (round-robin distribution)
@@ -420,7 +436,7 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
                     
             else:
                 # Create a small centralized portfolio if no other option
-                valid_remaining = [idx for idx in all_remaining if idx in remaining.index]
+                valid_remaining = [idx for idx in remaining_indices if idx in remaining.index]
                 if valid_remaining:
                     portfolios[f'CENTRALIZED_{portfolio_id}'] = {
                         'type': 'CENTRALIZED',
@@ -430,7 +446,7 @@ def create_centralized_portfolios(unassigned_customers: pd.DataFrame,
                         'customer_count': len(valid_remaining),
                         'customer_indices': valid_remaining,
                         'customers': remaining.loc[valid_remaining].copy(),
-                        'avg_distance_to_branch': None
+                        'avg_distance_to_au': None
                     }
                     print(f"Created small CENTRALIZED_{portfolio_id} with {len(valid_remaining)} customers")
     
@@ -445,7 +461,7 @@ def optimize_portfolios_from_dataframes(customers_df: pd.DataFrame, branches_df:
                                        min_portfolio_size: int = 220, max_portfolio_size: int = 250,
                                        radius_miles: float = 20) -> Dict:
     """
-    Main function to optimize customer portfolios ensuring customers are assigned to nearest AU.
+    Main function to optimize customer portfolios ensuring customers are assigned to nearest portfolio AU.
     
     Args:
         customers_df: DataFrame with customer data
@@ -458,6 +474,7 @@ def optimize_portfolios_from_dataframes(customers_df: pd.DataFrame, branches_df:
         Dictionary containing all portfolios
     """
     try:
+        # Validate data
         customers = validate_customer_data(customers_df)
         branches = validate_branch_data(branches_df)
         
@@ -624,7 +641,7 @@ if __name__ == "__main__":
         # Add debugging before running the optimization
         # debug_dataframes(customers_df, branches_df)
         
-        # Optimize portfolios from DataFrames with nearest AU assignment
+        # Optimize portfolios from DataFrames with nearest portfolio AU assignment
         portfolios = optimize_portfolios_from_dataframes(
             customers_df=customers_df,  # Your customer DataFrame
             branches_df=branches_df,    # Your branch DataFrame
