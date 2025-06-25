@@ -1,297 +1,438 @@
 import pandas as pd
 import numpy as np
 from math import radians, cos, sin, asin, sqrt
-from sklearn.cluster import KMeans
-from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
+from typing import List, Dict, Tuple
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """
-    Calculate the great circle distance between two points 
-    on the earth (specified in decimal degrees) in miles
-    """
-    # Convert decimal degrees to radians
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    
-    # Haversine formula
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    r = 3956  # Radius of earth in miles
-    return c * r
-
-def find_customers_within_radius(customers_df, branch_lat, branch_lon, radius_miles=20):
-    """
-    Find all customers within specified radius of a branch
-    """
-    customers_in_range = []
-    
-    for idx, customer in customers_df.iterrows():
-        distance = haversine_distance(
-            customer['LAT_NUM'], customer['LON_NUM'],
-            branch_lat, branch_lon
-        )
+class CustomerPortfolioClusterer:
+    def __init__(self, max_distance_miles: float = 20, min_cluster_size: int = 200):
+        """
+        Initialize the clusterer with distance and size constraints.
         
-        if distance <= radius_miles:
-            customers_in_range.append({
-                'ECN': customer['ECN'],
-                'distance': distance,
-                'customer_idx': idx
-            })
-    
-    return customers_in_range
-
-def create_in_market_portfolios(customers_df, branches_df, min_size=220, max_size=250):
-    """
-    Create in-market portfolios for branches that have sufficient customers within 20 miles
-    """
-    in_market_portfolios = []
-    assigned_customers = set()
-    
-    # For each branch, check if it can support an in-market portfolio
-    for idx, branch in branches_df.iterrows():
-        # Find customers within 20 miles
-        customers_in_range = find_customers_within_radius(
-            customers_df, 
-            branch['BRANCH_LAT_NUM'], 
-            branch['BRANCH_LON_NUM']
-        )
+        Args:
+            max_distance_miles: Maximum distance in miles for customers to be in a cluster
+            min_cluster_size: Minimum number of customers required for a viable cluster
+        """
+        self.max_distance_miles = max_distance_miles
+        self.min_cluster_size = min_cluster_size
         
-        # Filter out already assigned customers
-        available_customers = [
-            c for c in customers_in_range 
-            if c['customer_idx'] not in assigned_customers
-        ]
+    def haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """
+        Calculate the haversine distance between two points on Earth in miles.
         
-        # If we have enough customers for a portfolio
-        if len(available_customers) >= min_size:
-            # Sort by distance to get closest customers first
-            available_customers.sort(key=lambda x: x['distance'])
+        Args:
+            lat1, lon1: Latitude and longitude of first point
+            lat2, lon2: Latitude and longitude of second point
             
-            # Take up to max_size customers
-            selected_customers = available_customers[:max_size]
-            
-            # Mark these customers as assigned
-            for customer in selected_customers:
-                assigned_customers.add(customer['customer_idx'])
-            
-            portfolio = {
-                'portfolio_type': 'in_market',
-                'branch_au': branch['BRANCH_AU'],
-                'branch_lat': branch['BRANCH_LAT_NUM'],
-                'branch_lon': branch['BRANCH_LON_NUM'],
-                'customers': [c['ECN'] for c in selected_customers],
-                'customer_count': len(selected_customers),
-                'avg_distance': np.mean([c['distance'] for c in selected_customers])
-            }
-            
-            in_market_portfolios.append(portfolio)
-    
-    return in_market_portfolios, assigned_customers
-
-def cluster_remaining_customers(customers_df, assigned_customers, min_size=220, max_size=250):
-    """
-    Cluster remaining customers for centralized portfolios
-    """
-    # Get unassigned customers
-    unassigned_mask = ~customers_df.index.isin(assigned_customers)
-    unassigned_customers = customers_df[unassigned_mask].copy()
-    
-    if len(unassigned_customers) == 0:
-        return []
-    
-    # Estimate number of clusters needed
-    n_customers = len(unassigned_customers)
-    n_clusters = max(1, n_customers // max_size)
-    
-    # If we don't have enough customers for even one portfolio, return empty
-    if n_customers < min_size:
-        print(f"Warning: Only {n_customers} unassigned customers remaining, less than minimum portfolio size")
-        return []
-    
-    # Perform K-means clustering on customer locations
-    coordinates = unassigned_customers[['LAT_NUM', 'LON_NUM']].values
-    
-    if n_clusters == 1:
-        # Single cluster - assign all customers to one portfolio
-        cluster_labels = np.zeros(len(unassigned_customers))
-    else:
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(coordinates)
-    
-    # Create portfolios from clusters
-    centralized_portfolios = []
-    
-    for cluster_id in range(n_clusters):
-        cluster_customers = unassigned_customers[cluster_labels == cluster_id]
+        Returns:
+            Distance in miles
+        """
+        # Convert decimal degrees to radians
+        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
         
-        # If cluster is too small, merge with largest cluster
-        if len(cluster_customers) < min_size:
-            # Find the largest cluster that can accommodate these customers
-            for i, portfolio in enumerate(centralized_portfolios):
-                if portfolio['customer_count'] + len(cluster_customers) <= max_size:
-                    portfolio['customers'].extend(cluster_customers['ECN'].tolist())
-                    portfolio['customer_count'] += len(cluster_customers)
-                    break
-            else:
-                # If no existing portfolio can take them, create a new one anyway
-                # (This handles edge cases where clustering doesn't work perfectly)
-                if len(cluster_customers) > 0:
-                    portfolio = {
-                        'portfolio_type': 'centralized',
-                        'cluster_id': f'centralized_{cluster_id}',
-                        'customers': cluster_customers['ECN'].tolist(),
-                        'customer_count': len(cluster_customers),
-                        'center_lat': cluster_customers['LAT_NUM'].mean(),
-                        'center_lon': cluster_customers['LON_NUM'].mean()
-                    }
-                    centralized_portfolios.append(portfolio)
-        else:
-            # Cluster is large enough, create portfolio
-            portfolio = {
-                'portfolio_type': 'centralized',
-                'cluster_id': f'centralized_{cluster_id}',
-                'customers': cluster_customers['ECN'].tolist(),
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * asin(sqrt(a))
+        
+        # Radius of earth in miles
+        r = 3956
+        return c * r
+    
+    def create_distance_matrix(self, customers_df: pd.DataFrame, branches_df: pd.DataFrame) -> np.ndarray:
+        """
+        Create a distance matrix between all customers and branches.
+        
+        Args:
+            customers_df: DataFrame with customer data (ECN, LAT_NUM, LON_NUM)
+            branches_df: DataFrame with branch data (BRANCH_AU, BRANCH_LAT_NUM, BRANCH_LON_NUM)
+            
+        Returns:
+            Distance matrix where rows are customers and columns are branches
+        """
+        n_customers = len(customers_df)
+        n_branches = len(branches_df)
+        distance_matrix = np.zeros((n_customers, n_branches))
+        
+        for i, (_, customer) in enumerate(customers_df.iterrows()):
+            for j, (_, branch) in enumerate(branches_df.iterrows()):
+                distance = self.haversine_distance(
+                    customer['LAT_NUM'], customer['LON_NUM'],
+                    branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
+                )
+                distance_matrix[i, j] = distance
+                
+        return distance_matrix
+    
+    def assign_customers_to_branches(self, customers_df: pd.DataFrame, branches_df: pd.DataFrame) -> Dict:
+        """
+        Assign customers to branches based on proximity and create clusters.
+        
+        Args:
+            customers_df: DataFrame with customer data
+            branches_df: DataFrame with branch data
+            
+        Returns:
+            Dictionary containing cluster information
+        """
+        # Calculate distance matrix
+        distance_matrix = self.create_distance_matrix(customers_df, branches_df)
+        
+        # Initialize clusters
+        clusters = {}
+        viable_clusters = {}
+        customer_assignments = {}
+        
+        # For each branch, find customers within the distance threshold
+        for branch_idx, (_, branch) in enumerate(branches_df.iterrows()):
+            branch_au = branch['BRANCH_AU']
+            
+            # Find customers within max_distance_miles
+            customer_indices = np.where(distance_matrix[:, branch_idx] <= self.max_distance_miles)[0]
+            
+            # Get customer details for this cluster
+            cluster_customers = customers_df.iloc[customer_indices].copy()
+            cluster_customers['DISTANCE_TO_BRANCH'] = distance_matrix[customer_indices, branch_idx]
+            
+            # Sort by distance to branch
+            cluster_customers = cluster_customers.sort_values('DISTANCE_TO_BRANCH')
+            
+            clusters[branch_au] = {
+                'branch_info': branch.to_dict(),
+                'customers': cluster_customers,
                 'customer_count': len(cluster_customers),
-                'center_lat': cluster_customers['LAT_NUM'].mean(),
-                'center_lon': cluster_customers['LON_NUM'].mean()
+                'viable': len(cluster_customers) >= self.min_cluster_size
             }
-            centralized_portfolios.append(portfolio)
-    
-    return centralized_portfolios
-
-def balance_portfolios(portfolios, min_size=220, max_size=250):
-    """
-    Balance portfolio sizes by redistributing customers
-    """
-    # Separate oversized and undersized portfolios
-    oversized = [p for p in portfolios if p['customer_count'] > max_size]
-    undersized = [p for p in portfolios if p['customer_count'] < min_size]
-    balanced = [p for p in portfolios if min_size <= p['customer_count'] <= max_size]
-    
-    # Redistribute customers from oversized to undersized portfolios
-    for over_portfolio in oversized:
-        excess_customers = over_portfolio['customer_count'] - max_size
-        customers_to_move = over_portfolio['customers'][-excess_customers:]
-        over_portfolio['customers'] = over_portfolio['customers'][:-excess_customers]
-        over_portfolio['customer_count'] = len(over_portfolio['customers'])
+            
+            # Track viable clusters separately
+            if len(cluster_customers) >= self.min_cluster_size:
+                viable_clusters[branch_au] = clusters[branch_au]
+                
+                # Assign customers to this branch
+                for _, customer in cluster_customers.iterrows():
+                    customer_assignments[customer['ECN']] = branch_au
         
-        # Distribute excess customers to undersized portfolios
-        for under_portfolio in undersized:
-            needed = min_size - under_portfolio['customer_count']
-            if needed > 0 and customers_to_move:
-                take = min(needed, len(customers_to_move))
-                under_portfolio['customers'].extend(customers_to_move[:take])
-                under_portfolio['customer_count'] += take
-                customers_to_move = customers_to_move[take:]
+        return {
+            'all_clusters': clusters,
+            'viable_clusters': viable_clusters,
+            'customer_assignments': customer_assignments,
+            'summary': self._generate_summary(clusters, viable_clusters)
+        }
     
-    # Combine all portfolios
-    all_portfolios = balanced + [p for p in oversized if p['customer_count'] >= min_size] + \
-                    [p for p in undersized if p['customer_count'] >= min_size]
+    def optimize_overlapping_assignments(self, customers_df: pd.DataFrame, branches_df: pd.DataFrame) -> Dict:
+        """
+        Handle overlapping assignments by assigning each customer to the nearest viable branch.
+        
+        Args:
+            customers_df: DataFrame with customer data
+            branches_df: DataFrame with branch data
+            
+        Returns:
+            Optimized cluster assignments
+        """
+        # First, get initial assignments
+        initial_results = self.assign_customers_to_branches(customers_df, branches_df)
+        
+        # Get list of viable branches
+        viable_branch_aus = list(initial_results['viable_clusters'].keys())
+        
+        if not viable_branch_aus:
+            return initial_results
+        
+        # Filter branches to only viable ones
+        viable_branches_df = branches_df[branches_df['BRANCH_AU'].isin(viable_branch_aus)].copy()
+        
+        # Recalculate distance matrix for viable branches only
+        distance_matrix = self.create_distance_matrix(customers_df, viable_branches_df)
+        
+        # Initialize optimized clusters
+        optimized_clusters = {}
+        customer_assignments = {}
+        
+        # Initialize empty clusters for viable branches
+        for branch_au in viable_branch_aus:
+            branch_info = branches_df[branches_df['BRANCH_AU'] == branch_au].iloc[0]
+            optimized_clusters[branch_au] = {
+                'branch_info': branch_info.to_dict(),
+                'customers': pd.DataFrame(),
+                'customer_count': 0,
+                'viable': False
+            }
+        
+        # Assign each customer to nearest viable branch within distance threshold
+        for customer_idx, (_, customer) in enumerate(customers_df.iterrows()):
+            # Find distances to all viable branches
+            customer_distances = distance_matrix[customer_idx, :]
+            
+            # Find branches within threshold
+            within_threshold = customer_distances <= self.max_distance_miles
+            
+            if np.any(within_threshold):
+                # Assign to nearest branch within threshold
+                nearest_branch_idx = np.argmin(np.where(within_threshold, customer_distances, np.inf))
+                nearest_branch_au = viable_branches_df.iloc[nearest_branch_idx]['BRANCH_AU']
+                
+                # Add customer to cluster
+                customer_data = customer.to_dict()
+                customer_data['DISTANCE_TO_BRANCH'] = customer_distances[nearest_branch_idx]
+                
+                if optimized_clusters[nearest_branch_au]['customers'].empty:
+                    optimized_clusters[nearest_branch_au]['customers'] = pd.DataFrame([customer_data])
+                else:
+                    optimized_clusters[nearest_branch_au]['customers'] = pd.concat([
+                        optimized_clusters[nearest_branch_au]['customers'],
+                        pd.DataFrame([customer_data])
+                    ], ignore_index=True)
+                
+                customer_assignments[customer['ECN']] = nearest_branch_au
+        
+        # Update cluster statistics
+        final_viable_clusters = {}
+        for branch_au, cluster in optimized_clusters.items():
+            cluster['customer_count'] = len(cluster['customers'])
+            cluster['viable'] = cluster['customer_count'] >= self.min_cluster_size
+            
+            if cluster['viable']:
+                # Sort customers by distance
+                cluster['customers'] = cluster['customers'].sort_values('DISTANCE_TO_BRANCH')
+                final_viable_clusters[branch_au] = cluster
+        
+        return {
+            'all_clusters': optimized_clusters,
+            'viable_clusters': final_viable_clusters,
+            'customer_assignments': customer_assignments,
+            'summary': self._generate_summary(optimized_clusters, final_viable_clusters)
+        }
     
-    return all_portfolios
+    def _generate_summary(self, all_clusters: Dict, viable_clusters: Dict) -> Dict:
+        """Generate summary statistics for the clustering results."""
+        total_branches = len(all_clusters)
+        viable_branches = len(viable_clusters)
+        
+        # Calculate customer statistics
+        total_customers_assigned = sum(cluster['customer_count'] for cluster in viable_clusters.values())
+        
+        cluster_sizes = [cluster['customer_count'] for cluster in viable_clusters.values()]
+        
+        summary = {
+            'total_branches_analyzed': total_branches,
+            'viable_branches': viable_branches,
+            'branches_to_hire_bankers': list(viable_clusters.keys()),
+            'total_customers_in_viable_clusters': total_customers_assigned,
+            'average_cluster_size': np.mean(cluster_sizes) if cluster_sizes else 0,
+            'min_cluster_size': min(cluster_sizes) if cluster_sizes else 0,
+            'max_cluster_size': max(cluster_sizes) if cluster_sizes else 0,
+            'cluster_size_distribution': {
+                'mean': np.mean(cluster_sizes) if cluster_sizes else 0,
+                'std': np.std(cluster_sizes) if cluster_sizes else 0,
+                'median': np.median(cluster_sizes) if cluster_sizes else 0
+            }
+        }
+        
+        return summary
+    
+    def visualize_results(self, results: Dict, customers_df: pd.DataFrame, branches_df: pd.DataFrame):
+        """
+        Create visualizations of the clustering results.
+        
+        Args:
+            results: Results from the clustering algorithm
+            customers_df: Original customer data
+            branches_df: Original branch data
+        """
+        viable_clusters = results['viable_clusters']
+        
+        # Create subplots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))
+        
+        # Plot 1: Geographic distribution
+        colors = plt.cm.Set3(np.linspace(0, 1, len(viable_clusters)))
+        
+        for i, (branch_au, cluster) in enumerate(viable_clusters.items()):
+            customers = cluster['customers']
+            branch_info = cluster['branch_info']
+            
+            # Plot customers
+            ax1.scatter(customers['LON_NUM'], customers['LAT_NUM'], 
+                       c=[colors[i]], alpha=0.6, s=20, label=f'AU {branch_au}')
+            
+            # Plot branch location
+            ax1.scatter(branch_info['BRANCH_LON_NUM'], branch_info['BRANCH_LAT_NUM'], 
+                       c=[colors[i]], s=200, marker='*', edgecolors='black', linewidth=2)
+        
+        ax1.set_xlabel('Longitude')
+        ax1.set_ylabel('Latitude')
+        ax1.set_title('Geographic Distribution of Viable Clusters')
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Cluster sizes
+        branch_names = list(viable_clusters.keys())
+        cluster_sizes = [cluster['customer_count'] for cluster in viable_clusters.values()]
+        
+        bars = ax2.bar(range(len(branch_names)), cluster_sizes, color=colors[:len(branch_names)])
+        ax2.axhline(y=self.min_cluster_size, color='red', linestyle='--', 
+                   label=f'Min Cluster Size ({self.min_cluster_size})')
+        ax2.set_xlabel('Branch AU')
+        ax2.set_ylabel('Number of Customers')
+        ax2.set_title('Cluster Sizes for Viable Branches')
+        ax2.set_xticks(range(len(branch_names)))
+        ax2.set_xticklabels([f'AU {au}' for au in branch_names], rotation=45)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Add value labels on bars
+        for bar, size in zip(bars, cluster_sizes):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5, 
+                    str(size), ha='center', va='bottom')
+        
+        # Plot 3: Distance distribution
+        all_distances = []
+        for cluster in viable_clusters.values():
+            all_distances.extend(cluster['customers']['DISTANCE_TO_BRANCH'].tolist())
+        
+        ax3.hist(all_distances, bins=30, alpha=0.7, edgecolor='black')
+        ax3.axvline(x=self.max_distance_miles, color='red', linestyle='--', 
+                   label=f'Max Distance ({self.max_distance_miles} miles)')
+        ax3.set_xlabel('Distance to Branch (miles)')
+        ax3.set_ylabel('Number of Customers')
+        ax3.set_title('Distribution of Customer Distances to Assigned Branches')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Summary statistics
+        ax4.axis('off')
+        summary = results['summary']
+        summary_text = f"""
+        CLUSTERING SUMMARY
+        
+        Total Branches Analyzed: {summary['total_branches_analyzed']}
+        Viable Branches (Hire Bankers): {summary['viable_branches']}
+        
+        Customer Assignment:
+        • Total Customers in Clusters: {summary['total_customers_in_viable_clusters']:,}
+        • Average Cluster Size: {summary['average_cluster_size']:.1f}
+        • Min Cluster Size: {summary['min_cluster_size']}
+        • Max Cluster Size: {summary['max_cluster_size']}
+        
+        Branches to Hire Bankers:
+        {', '.join([f'AU {au}' for au in summary['branches_to_hire_bankers']])}
+        
+        Parameters Used:
+        • Max Distance: {self.max_distance_miles} miles
+        • Min Cluster Size: {self.min_cluster_size} customers
+        """
+        
+        ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes, 
+                fontsize=12, verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def export_results(self, results: Dict, filename_prefix: str = 'customer_clusters'):
+        """
+        Export clustering results to CSV files.
+        
+        Args:
+            results: Results from clustering algorithm
+            filename_prefix: Prefix for output files
+        """
+        viable_clusters = results['viable_clusters']
+        
+        # Export cluster assignments
+        cluster_assignments = []
+        for branch_au, cluster in viable_clusters.items():
+            for _, customer in cluster['customers'].iterrows():
+                cluster_assignments.append({
+                    'ECN': customer['ECN'],
+                    'ASSIGNED_BRANCH_AU': branch_au,
+                    'DISTANCE_TO_BRANCH': customer['DISTANCE_TO_BRANCH'],
+                    'CUSTOMER_LAT': customer['LAT_NUM'],
+                    'CUSTOMER_LON': customer['LON_NUM'],
+                    'BRANCH_LAT': cluster['branch_info']['BRANCH_LAT_NUM'],
+                    'BRANCH_LON': cluster['branch_info']['BRANCH_LON_NUM']
+                })
+        
+        assignments_df = pd.DataFrame(cluster_assignments)
+        assignments_df.to_csv(f'{filename_prefix}_assignments.csv', index=False)
+        
+        # Export cluster summary
+        cluster_summary = []
+        for branch_au, cluster in viable_clusters.items():
+            cluster_summary.append({
+                'BRANCH_AU': branch_au,
+                'BRANCH_LAT': cluster['branch_info']['BRANCH_LAT_NUM'],
+                'BRANCH_LON': cluster['branch_info']['BRANCH_LON_NUM'],
+                'CUSTOMER_COUNT': cluster['customer_count'],
+                'AVG_DISTANCE': cluster['customers']['DISTANCE_TO_BRANCH'].mean(),
+                'MAX_DISTANCE': cluster['customers']['DISTANCE_TO_BRANCH'].max(),
+                'MIN_DISTANCE': cluster['customers']['DISTANCE_TO_BRANCH'].min()
+            })
+        
+        summary_df = pd.DataFrame(cluster_summary)
+        summary_df.to_csv(f'{filename_prefix}_summary.csv', index=False)
+        
+        print(f"Results exported to:")
+        print(f"- {filename_prefix}_assignments.csv")
+        print(f"- {filename_prefix}_summary.csv")
 
-def optimize_customer_portfolios(customers_df, branches_df, min_size=220, max_size=250):
+# Example usage
+def example_usage():
     """
-    Main function to optimize customer portfolios
+    Example of how to use the CustomerPortfolioClusterer class.
     """
-    print("Starting portfolio optimization...")
-    print(f"Total customers: {len(customers_df)}")
-    print(f"Total branches: {len(branches_df)}")
     
-    # Step 1: Create in-market portfolios
-    print("\nStep 1: Creating in-market portfolios...")
-    in_market_portfolios, assigned_customers = create_in_market_portfolios(
-        customers_df, branches_df, min_size, max_size
-    )
+    # Sample data creation (replace with your actual data loading)
+    np.random.seed(42)
     
-    print(f"Created {len(in_market_portfolios)} in-market portfolios")
-    print(f"Assigned {len(assigned_customers)} customers to in-market portfolios")
-    
-    # Step 2: Create centralized portfolios for remaining customers
-    print("\nStep 2: Creating centralized portfolios...")
-    centralized_portfolios = cluster_remaining_customers(
-        customers_df, assigned_customers, min_size, max_size
-    )
-    
-    print(f"Created {len(centralized_portfolios)} centralized portfolios")
-    
-    # Step 3: Balance all portfolios
-    print("\nStep 3: Balancing portfolios...")
-    all_portfolios = in_market_portfolios + centralized_portfolios
-    balanced_portfolios = balance_portfolios(all_portfolios, min_size, max_size)
-    
-    print(f"Final result: {len(balanced_portfolios)} balanced portfolios")
-    
-    return balanced_portfolios
-
-def generate_portfolio_summary(portfolios):
-    """
-    Generate a summary report of the portfolios
-    """
-    print("\n" + "="*60)
-    print("PORTFOLIO OPTIMIZATION SUMMARY")
-    print("="*60)
-    
-    in_market_count = sum(1 for p in portfolios if p['portfolio_type'] == 'in_market')
-    centralized_count = sum(1 for p in portfolios if p['portfolio_type'] == 'centralized')
-    total_customers = sum(p['customer_count'] for p in portfolios)
-    
-    print(f"Total Portfolios: {len(portfolios)}")
-    print(f"  - In-Market: {in_market_count}")
-    print(f"  - Centralized: {centralized_count}")
-    print(f"Total Customers Assigned: {total_customers}")
-    
-    print("\nPortfolio Size Distribution:")
-    sizes = [p['customer_count'] for p in portfolios]
-    print(f"  - Min Size: {min(sizes)}")
-    print(f"  - Max Size: {max(sizes)}")
-    print(f"  - Average Size: {np.mean(sizes):.1f}")
-    
-    print("\nDetailed Portfolio Information:")
-    for i, portfolio in enumerate(portfolios, 1):
-        if portfolio['portfolio_type'] == 'in_market':
-            print(f"{i}. In-Market Portfolio (Branch: {portfolio['branch_au']})")
-            print(f"   Customers: {portfolio['customer_count']}, Avg Distance: {portfolio['avg_distance']:.1f} miles")
-        else:
-            print(f"{i}. Centralized Portfolio (Cluster: {portfolio['cluster_id']})")
-            print(f"   Customers: {portfolio['customer_count']}, Center: ({portfolio['center_lat']:.3f}, {portfolio['center_lon']:.3f})")
-    
-    return {
-        'total_portfolios': len(portfolios),
-        'in_market_count': in_market_count,
-        'centralized_count': centralized_count,
-        'total_customers': total_customers,
-        'avg_portfolio_size': np.mean(sizes)
+    # Create sample customer data
+    n_customers = 5000
+    customers_data = {
+        'ECN': [f'CUST_{i:05d}' for i in range(n_customers)],
+        'LAT_NUM': np.random.normal(40.7128, 2, n_customers),  # Around NYC
+        'LON_NUM': np.random.normal(-74.0060, 2, n_customers),
+        'BILLINGSTREET': [f'{np.random.randint(1, 9999)} Main St' for _ in range(n_customers)],
+        'BILLINGCITY': ['New York'] * n_customers,
+        'BILLINGSTATE': ['NY'] * n_customers
     }
+    customers_df = pd.DataFrame(customers_data)
+    
+    # Create sample branch data
+    n_branches = 20
+    branches_data = {
+        'BRANCH_AU': [f'AU_{i:03d}' for i in range(n_branches)],
+        'BRANCH_LAT_NUM': np.random.normal(40.7128, 1.5, n_branches),
+        'BRANCH_LON_NUM': np.random.normal(-74.0060, 1.5, n_branches)
+    }
+    branches_df = pd.DataFrame(branches_data)
+    
+    # Initialize clusterer
+    clusterer = CustomerPortfolioClusterer(max_distance_miles=20, min_cluster_size=200)
+    
+    # Perform clustering
+    print("Performing customer clustering...")
+    results = clusterer.optimize_overlapping_assignments(customers_df, branches_df)
+    
+    # Print summary
+    print("\n" + "="*50)
+    print("CLUSTERING RESULTS SUMMARY")
+    print("="*50)
+    print(f"Total branches analyzed: {results['summary']['total_branches_analyzed']}")
+    print(f"Viable branches for hiring bankers: {results['summary']['viable_branches']}")
+    print(f"Branches to hire bankers: {results['summary']['branches_to_hire_bankers']}")
+    print(f"Total customers assigned: {results['summary']['total_customers_in_viable_clusters']:,}")
+    print(f"Average cluster size: {results['summary']['average_cluster_size']:.1f}")
+    
+    # Visualize results
+    clusterer.visualize_results(results, customers_df, branches_df)
+    
+    # Export results
+    clusterer.export_results(results, 'customer_portfolio_clusters')
+    
+    return results
 
-# Example usage function
-def run_portfolio_optimization(customers_csv_path, branches_csv_path):
-    """
-    Example function to run the optimization with CSV files
-    """
-    # Load data
-    customers_df = pd.read_csv(customers_csv_path)
-    branches_df = pd.read_csv(branches_csv_path)
-    
-    # Validate required columns
-    required_customer_cols = ['ECN', 'LAT_NUM', 'LON_NUM', 'BILLINGSTREET', 'BILLINGCITY', 'BILLINGSTATE']
-    required_branch_cols = ['BRANCH_AU', 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM']
-    
-    for col in required_customer_cols:
-        if col not in customers_df.columns:
-            raise ValueError(f"Missing required column in customers data: {col}")
-    
-    for col in required_branch_cols:
-        if col not in branches_df.columns:
-            raise ValueError(f"Missing required column in branches data: {col}")
-    
-    # Run optimization
-    portfolios = optimize_customer_portfolios(customers_df, branches_df)
-    
-    # Generate summary
-    summary = generate_portfolio_summary(portfolios)
-    
-    return portfolios, summary
+if __name__ == "__main__":
+    results = example_usage()
