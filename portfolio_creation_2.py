@@ -13,6 +13,20 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
+def calculate_cluster_radius(customers_coords):
+    """Calculate maximum distance from centroid to any point in cluster"""
+    if len(customers_coords) <= 1:
+        return 0
+    
+    centroid = customers_coords.mean(axis=0)
+    max_distance = 0
+    
+    for coord in customers_coords:
+        distance = haversine_distance(centroid[0], centroid[1], coord[0], coord[1])
+        max_distance = max(max_distance, distance)
+    
+    return max_distance
+
 def split_large_cluster(cluster_indices, cluster_coords, customers_df, min_size, max_size, max_radius):
     """
     Split a large cluster into smaller valid clusters using k-means approach
