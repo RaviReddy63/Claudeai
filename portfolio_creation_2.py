@@ -14,51 +14,35 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
-def create_customer_portfolios(customer_df, branch_df):
+# OPTION 1: Customer-to-customer clustering (current approach)
+def create_customer_portfolios_v1(customer_df, branch_df):
     """
-    Cluster customers and assign to nearest branches
-    
-    Parameters:
-    customer_df: DataFrame with columns ECN, LAT_NUM, LON_NUM, BILLINGSTREET, BILLINGCITY, BILLINGSTATE
-    branch_df: DataFrame with columns BRANCH_AU, BRANCH_LAT_NUM, BRANCH_LON_NUM
+    Cluster customers based on customer-to-customer proximity, then assign to nearest branch
     """
-    
-    # Remove customers with missing coordinates
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
-    
-    # Convert coordinates to radians for DBSCAN
     coords = np.radians(customers_clean[['LAT_NUM', 'LON_NUM']].values)
     
-    # DBSCAN parameters
-    # eps in radians (20 miles ≈ 0.00508 radians)
     eps_miles = 20
-    eps_radians = eps_miles / 3959  # Earth radius in miles
-    min_samples = 200  # Minimum cluster size
+    eps_radians = eps_miles / 3959
+    min_samples = 200
     
-    # Apply DBSCAN clustering
     dbscan = DBSCAN(eps=eps_radians, min_samples=min_samples, metric='haversine')
     cluster_labels = dbscan.fit_predict(coords)
-    
     customers_clean['cluster'] = cluster_labels
     
-    # Filter clusters by size (200-280 customers)
     cluster_sizes = customers_clean['cluster'].value_counts()
     valid_clusters = cluster_sizes[(cluster_sizes >= 200) & (cluster_sizes <= 280)].index
-    valid_clusters = valid_clusters[valid_clusters != -1]  # Remove noise points
+    valid_clusters = valid_clusters[valid_clusters != -1]
     
-    # Keep only customers in valid clusters
     clustered_customers = customers_clean[customers_clean['cluster'].isin(valid_clusters)].copy()
     
     if len(clustered_customers) == 0:
         print("No valid clusters found with the given constraints")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     
-    # Calculate cluster centroids
     cluster_centroids = clustered_customers.groupby('cluster')[['LAT_NUM', 'LON_NUM']].mean()
     
-    # Assign each cluster to nearest branch
     cluster_assignments = []
-    
     for cluster_id, centroid in cluster_centroids.iterrows():
         min_distance = float('inf')
         assigned_branch = None
@@ -68,7 +52,6 @@ def create_customer_portfolios(customer_df, branch_df):
                 centroid['LAT_NUM'], centroid['LON_NUM'],
                 branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
             )
-            
             if distance < min_distance:
                 min_distance = distance
                 assigned_branch = branch['BRANCH_AU']
@@ -81,17 +64,65 @@ def create_customer_portfolios(customer_df, branch_df):
             'centroid_lon': centroid['LON_NUM']
         })
     
-    # Create assignment mapping
     cluster_branch_map = pd.DataFrame(cluster_assignments)
-    
-    # Merge with customer data
     final_assignments = clustered_customers.merge(
-        cluster_branch_map[['cluster', 'assigned_branch']], 
-        on='cluster', 
-        how='left'
+        cluster_branch_map[['cluster', 'assigned_branch']], on='cluster', how='left'
     )
     
     return final_assignments, cluster_branch_map
+
+# OPTION 2: Branch-centered clustering (alternative approach)
+def create_customer_portfolios_v2(customer_df, branch_df):
+    """
+    Create clusters around each branch, ensuring customers are within 20 miles of branch
+    """
+    customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
+    customers_clean['assigned_branch'] = None
+    customers_clean['distance_to_branch'] = float('inf')
+    
+    branch_portfolios = []
+    
+    for _, branch in branch_df.iterrows():
+        # Find all customers within 20 miles of this branch
+        customers_near_branch = []
+        
+        for idx, customer in customers_clean.iterrows():
+            if customers_clean.loc[idx, 'assigned_branch'] is not None:
+                continue  # Already assigned
+                
+            distance = haversine_distance(
+                customer['LAT_NUM'], customer['LON_NUM'],
+                branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
+            )
+            
+            if distance <= 20:
+                customers_near_branch.append((idx, distance))
+        
+        # Sort by distance and take only 200-280 closest customers
+        customers_near_branch.sort(key=lambda x: x[1])
+        
+        if 200 <= len(customers_near_branch) <= 280:
+            # Assign these customers to this branch
+            for idx, distance in customers_near_branch:
+                customers_clean.loc[idx, 'assigned_branch'] = branch['BRANCH_AU']
+                customers_clean.loc[idx, 'distance_to_branch'] = distance
+            
+            branch_portfolios.append({
+                'branch': branch['BRANCH_AU'],
+                'customer_count': len(customers_near_branch),
+                'max_distance': max([d for _, d in customers_near_branch])
+            })
+    
+    # Keep only assigned customers
+    assigned_customers = customers_clean[customers_clean['assigned_branch'].notna()].copy()
+    portfolio_summary = pd.DataFrame(branch_portfolios)
+    
+    return assigned_customers, portfolio_summary
+
+# Use the desired approach
+def create_customer_portfolios(customer_df, branch_df):
+    """Default to customer-to-customer clustering approach"""
+    return create_customer_portfolios_v1(customer_df, branch_df)
 
 # Execute clustering
 result_df, cluster_summary = create_customer_portfolios(customer_df, branch_df)
