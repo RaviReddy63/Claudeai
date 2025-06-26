@@ -295,21 +295,21 @@ def assign_geocoded_customers_to_portfolios(customers_without_coords, result_df,
                 # Handle potential inf or None values for distance
                 try:
                     if min_distance == float('inf') or min_distance is None:
-                        distance_value = None
+                        distance_value = 0.0
                     else:
                         distance_value = round(float(min_distance), 2)
                 except (ValueError, TypeError):
-                    distance_value = None
+                    distance_value = 0.0
                 
                 geocoded_results.append({
-                    'ECN': customer['ECN'],
-                    'BILLINGCITY': customer['BILLINGCITY'],
-                    'BILLINGSTATE': customer['BILLINGSTATE'],
-                    'LAT_NUM': lat,
-                    'LON_NUM': lon,
-                    'ASSIGNED_AU': nearest_au,
-                    'DISTANCE_TO_AU': distance_value,
-                    'TYPE': nearest_type + '_GEOCODED'
+                    'ECN': str(customer['ECN']) if customer['ECN'] is not None else '',
+                    'BILLINGCITY': str(customer['BILLINGCITY']) if customer['BILLINGCITY'] is not None else '',
+                    'BILLINGSTATE': str(customer['BILLINGSTATE']) if customer['BILLINGSTATE'] is not None else '',
+                    'LAT_NUM': float(lat),
+                    'LON_NUM': float(lon),
+                    'ASSIGNED_AU': str(nearest_au),
+                    'DISTANCE_TO_AU': float(distance_value),
+                    'TYPE': str(nearest_type + '_GEOCODED')
                 })
                 print(f"  Assigned to AU {nearest_au} (distance: {min_distance:.2f} miles)")
             else:
@@ -392,14 +392,14 @@ def assign_geocoded_customers_to_portfolios(customers_without_coords, result_df,
             
             if assigned:
                 fallback_results.append({
-                    'ECN': customer['ECN'],
-                    'BILLINGCITY': customer['BILLINGCITY'],
-                    'BILLINGSTATE': customer['BILLINGSTATE'],
+                    'ECN': str(customer['ECN']) if customer['ECN'] is not None else '',
+                    'BILLINGCITY': str(customer['BILLINGCITY']) if customer['BILLINGCITY'] is not None else '',
+                    'BILLINGSTATE': str(customer['BILLINGSTATE']) if customer['BILLINGSTATE'] is not None else '',
                     'LAT_NUM': None,  # No coordinates available
                     'LON_NUM': None,  # No coordinates available
-                    'ASSIGNED_AU': assigned_au,
+                    'ASSIGNED_AU': str(assigned_au),
                     'DISTANCE_TO_AU': None,  # Cannot calculate without coordinates
-                    'TYPE': assigned_type
+                    'TYPE': str(assigned_type)
                 })
             else:
                 print(f"    Could not assign customer {idx} - no fallback options available")
@@ -666,13 +666,13 @@ def create_customer_au_dataframe(customer_df, branch_df):
                     distance_value = 0
                 
                 inmarket_results.append({
-                    'ECN': customer_data['ECN'],
-                    'BILLINGCITY': customer_data['BILLINGCITY'],
-                    'BILLINGSTATE': customer_data['BILLINGSTATE'],
-                    'LAT_NUM': customer_data['LAT_NUM'],
-                    'LON_NUM': customer_data['LON_NUM'],
-                    'ASSIGNED_AU': branch_au,
-                    'DISTANCE_TO_AU': round(float(distance_value), 2),
+                    'ECN': str(customer_data['ECN']) if customer_data['ECN'] is not None else '',
+                    'BILLINGCITY': str(customer_data['BILLINGCITY']) if customer_data['BILLINGCITY'] is not None else '',
+                    'BILLINGSTATE': str(customer_data['BILLINGSTATE']) if customer_data['BILLINGSTATE'] is not None else '',
+                    'LAT_NUM': float(customer_data['LAT_NUM']),
+                    'LON_NUM': float(customer_data['LON_NUM']),
+                    'ASSIGNED_AU': str(branch_au),
+                    'DISTANCE_TO_AU': float(distance_value),
                     'TYPE': 'INMARKET'
                 })
         
@@ -710,13 +710,13 @@ def create_customer_au_dataframe(customer_df, branch_df):
                     distance_value = 0
                 
                 centralized_results.append({
-                    'ECN': customer_data['ECN'],
-                    'BILLINGCITY': customer_data['BILLINGCITY'],
-                    'BILLINGSTATE': customer_data['BILLINGSTATE'],
-                    'LAT_NUM': customer_data['LAT_NUM'],
-                    'LON_NUM': customer_data['LON_NUM'],
-                    'ASSIGNED_AU': branch_au,
-                    'DISTANCE_TO_AU': round(float(distance_value), 2),
+                    'ECN': str(customer_data['ECN']) if customer_data['ECN'] is not None else '',
+                    'BILLINGCITY': str(customer_data['BILLINGCITY']) if customer_data['BILLINGCITY'] is not None else '',
+                    'BILLINGSTATE': str(customer_data['BILLINGSTATE']) if customer_data['BILLINGSTATE'] is not None else '',
+                    'LAT_NUM': float(customer_data['LAT_NUM']),
+                    'LON_NUM': float(customer_data['LON_NUM']),
+                    'ASSIGNED_AU': str(branch_au),
+                    'DISTANCE_TO_AU': float(distance_value),
                     'TYPE': 'CENTRALIZED'
                 })
         
