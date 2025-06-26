@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -27,125 +26,23 @@ def calculate_cluster_radius(customers_coords):
     
     return max_distance
 
-def split_large_cluster(cluster_indices, cluster_coords, customers_df, min_size, max_size, max_radius):
-    """
-    Split a large cluster into smaller valid clusters using k-means approach
-    """
-    from sklearn.cluster import KMeans
-    
-    # Estimate number of sub-clusters needed
-    total_customers = len(cluster_indices)
-    n_subclusters = max(2, (total_customers + max_size - 1) // max_size)  # Ceiling division
-    
-    # Try different numbers of subclusters to find best split
-    best_subclusters = []
-    
-    for n in range(2, min(6, total_customers // min_size + 1)):  # Try 2-5 subclusters
-        try:
-            # Apply k-means clustering
-            coords_array = np.array(cluster_coords)
-            kmeans = KMeans(n_clusters=n, random_state=42, n_init=10)
-            subcluster_labels = kmeans.fit_predict(coords_array)
-            
-            current_subclusters = []
-            valid_split = True
-            
-            # Check each subcluster
-            for sub_id in range(n):
-                sub_mask = subcluster_labels == sub_id
-                sub_indices = [cluster_indices[i] for i in range(len(cluster_indices)) if sub_mask[i]]
-                sub_coords = [cluster_coords[i] for i in range(len(cluster_coords)) if sub_mask[i]]
-                
-                # Check constraints
-                if len(sub_indices) < min_size or len(sub_indices) > max_size:
-                    valid_split = False
-                    break
-                
-                sub_radius = calculate_cluster_radius(np.array(sub_coords))
-                if sub_radius > max_radius:
-                    valid_split = False
-                    break
-                
-                current_subclusters.append((sub_indices, sub_coords))
-            
-            # If this split is valid and better than previous, keep it
-            if valid_split and len(current_subclusters) > len(best_subclusters):
-                best_subclusters = current_subclusters
-                
-        except Exception as e:
-            continue  # Try next number of clusters
-    
-    # If no valid split found, use distance-based splitting
-    if not best_subclusters:
-        best_subclusters = distance_based_split(cluster_indices, cluster_coords, min_size, max_size, max_radius)
-    
-    return best_subclusters
-
-def distance_based_split(cluster_indices, cluster_coords, min_size, max_size, max_radius):
-    """
-    Fallback splitting method using distance-based approach
-    """
-    # Find two points that are farthest apart
-    max_dist = 0
-    seed1_idx, seed2_idx = 0, 1
-    
-    for i in range(len(cluster_coords)):
-        for j in range(i + 1, len(cluster_coords)):
-            dist = haversine_distance(
-                cluster_coords[i][0], cluster_coords[i][1],
-                cluster_coords[j][0], cluster_coords[j][1]
-            )
-            if dist > max_dist:
-                max_dist = dist
-                seed1_idx, seed2_idx = i, j
-    
-    # Assign each customer to nearest seed
-    subcluster1_indices, subcluster1_coords = [], []
-    subcluster2_indices, subcluster2_coords = [], []
-    
-    for i, (idx, coord) in enumerate(zip(cluster_indices, cluster_coords)):
-        dist1 = haversine_distance(coord[0], coord[1], cluster_coords[seed1_idx][0], cluster_coords[seed1_idx][1])
-        dist2 = haversine_distance(coord[0], coord[1], cluster_coords[seed2_idx][0], cluster_coords[seed2_idx][1])
-        
-        if dist1 <= dist2:
-            subcluster1_indices.append(idx)
-            subcluster1_coords.append(coord)
-        else:
-            subcluster2_indices.append(idx)
-            subcluster2_coords.append(coord)
-    
-    # Return valid subclusters
-    result = []
-    for sub_indices, sub_coords in [(subcluster1_indices, subcluster1_coords), (subcluster2_indices, subcluster2_coords)]:
-        if min_size <= len(sub_indices) <= max_size:
-            sub_radius = calculate_cluster_radius(np.array(sub_coords))
-            if sub_radius <= max_radius:
-                result.append((sub_indices, sub_coords))
-    
-    return result
-
 def constrained_clustering(customer_df, min_size=200, max_size=280, max_radius=20):
-    """
-    Create clusters with size and radius constraints during cluster formation
-    """
+    """Create clusters with size and radius constraints"""
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
-    customers_clean['cluster'] = -1  # Initialize as unassigned
+    customers_clean['cluster'] = -1
     
     unassigned_customers = customers_clean.copy()
     cluster_id = 0
     final_clusters = []
     
-    print(f"Starting with {len(unassigned_customers)} customers")
-    
     while len(unassigned_customers) >= min_size:
-        # Start with a random seed customer
         seed_idx = unassigned_customers.index[0]
         seed_customer = unassigned_customers.loc[seed_idx]
         
         current_cluster = [seed_idx]
         current_coords = [(seed_customer['LAT_NUM'], seed_customer['LON_NUM'])]
         
-        # Find all customers within initial radius of seed
+        # Find candidates within radius
         candidates = []
         for idx, customer in unassigned_customers.iterrows():
             if idx == seed_idx:
@@ -159,31 +56,24 @@ def constrained_clustering(customer_df, min_size=200, max_size=280, max_radius=2
             if distance <= max_radius:
                 candidates.append((idx, customer, distance))
         
-        # Sort candidates by distance from seed
         candidates.sort(key=lambda x: x[2])
         
-        # Greedily add customers while maintaining constraints
+        # Add customers while maintaining constraints
         for candidate_idx, candidate_customer, _ in candidates:
             if len(current_cluster) >= max_size:
                 break
             
-            # Test adding this customer
             test_coords = current_coords + [(candidate_customer['LAT_NUM'], candidate_customer['LON_NUM'])]
             test_radius = calculate_cluster_radius(np.array(test_coords))
             
-            # Add if it doesn't violate radius constraint
             if test_radius <= max_radius:
                 current_cluster.append(candidate_idx)
                 current_coords.append((candidate_customer['LAT_NUM'], candidate_customer['LON_NUM']))
         
         # Handle cluster based on size
         if len(current_cluster) < min_size:
-            # Too small - reject and remove seed
             unassigned_customers = unassigned_customers.drop([seed_idx])
-            print(f"Rejected cluster with {len(current_cluster)} customers (too small)")
-            
         elif len(current_cluster) <= max_size:
-            # Perfect size - accept as is
             cluster_radius = calculate_cluster_radius(np.array(current_coords))
             
             for idx in current_cluster:
@@ -199,35 +89,36 @@ def constrained_clustering(customer_df, min_size=200, max_size=280, max_radius=2
             
             unassigned_customers = unassigned_customers.drop(current_cluster)
             cluster_id += 1
-            print(f"Cluster {cluster_id-1}: {len(current_cluster)} customers, radius: {cluster_radius:.2f} miles")
-            
         else:
-            # Too large - split into smaller clusters
-            print(f"Splitting large cluster of {len(current_cluster)} customers")
-            split_clusters = split_large_cluster(current_cluster, current_coords, customers_clean, min_size, max_size, max_radius)
+            # Split large cluster using K-means
+            coords_array = np.array(current_coords)
+            n_splits = min(3, len(current_cluster) // min_size)
             
-            for split_cluster_indices, split_coords in split_clusters:
-                if len(split_cluster_indices) >= min_size:
-                    cluster_radius = calculate_cluster_radius(np.array(split_coords))
+            if n_splits > 1:
+                kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init=10)
+                subcluster_labels = kmeans.fit_predict(coords_array)
+                
+                for sub_id in range(n_splits):
+                    sub_mask = subcluster_labels == sub_id
+                    sub_indices = [current_cluster[i] for i in range(len(current_cluster)) if sub_mask[i]]
+                    sub_coords = [current_coords[i] for i in range(len(current_coords)) if sub_mask[i]]
                     
-                    for idx in split_cluster_indices:
-                        customers_clean.loc[idx, 'cluster'] = cluster_id
-                    
-                    final_clusters.append({
-                        'cluster_id': cluster_id,
-                        'size': len(split_cluster_indices),
-                        'radius': cluster_radius,
-                        'centroid_lat': np.mean([coord[0] for coord in split_coords]),
-                        'centroid_lon': np.mean([coord[1] for coord in split_coords])
-                    })
-                    
-                    cluster_id += 1
-                    print(f"  Split cluster {cluster_id-1}: {len(split_cluster_indices)} customers, radius: {cluster_radius:.2f} miles")
+                    if len(sub_indices) >= min_size and len(sub_indices) <= max_size:
+                        sub_radius = calculate_cluster_radius(np.array(sub_coords))
+                        if sub_radius <= max_radius:
+                            for idx in sub_indices:
+                                customers_clean.loc[idx, 'cluster'] = cluster_id
+                            
+                            final_clusters.append({
+                                'cluster_id': cluster_id,
+                                'size': len(sub_indices),
+                                'radius': sub_radius,
+                                'centroid_lat': np.mean([coord[0] for coord in sub_coords]),
+                                'centroid_lon': np.mean([coord[1] for coord in sub_coords])
+                            })
+                            cluster_id += 1
             
-            # Remove all customers from current cluster (assigned or not)
             unassigned_customers = unassigned_customers.drop(current_cluster)
-    
-    print(f"Final result: {cluster_id} valid clusters, {len(unassigned_customers)} unassigned customers")
     
     return customers_clean, pd.DataFrame(final_clusters)
 
@@ -252,278 +143,148 @@ def assign_clusters_to_branches(clustered_customers, cluster_info, branch_df):
         cluster_assignments.append({
             'cluster_id': cluster['cluster_id'],
             'assigned_branch': assigned_branch,
-            'distance_to_branch': min_distance,
-            'cluster_size': cluster['size'],
-            'cluster_radius': cluster['radius']
         })
     
     return pd.DataFrame(cluster_assignments)
 
 def reassign_customers_by_distance(clustered_customers, cluster_info, branch_df, max_distance=20, max_customers_per_branch=280):
-    """
-    Step 5: Reassign customers based on direct distance to identified branches
-    with capacity constraints and overflow handling
-    """
-    # Get unique branches that were assigned clusters
+    """Reassign customers based on direct distance to branches with capacity constraints"""
+    
+    # Get identified branches
     identified_branches = cluster_info['assigned_branch'].unique()
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
     
-    print(f"Identified branches: {list(identified_branches)}")
-    
-    # Only work with customers that were successfully clustered
     customers_to_reassign = clustered_customers[clustered_customers['cluster'] != -1].copy()
     
-    # Calculate distance from each customer to each identified branch
-    customer_branch_distances = []
+    # Calculate distances and assign to closest branch within range
+    customer_assignments = {}
+    unassigned_customers = []
     
     for _, customer in customers_to_reassign.iterrows():
-        customer_distances = []
-        
+        distances = []
         for _, branch in identified_branch_coords.iterrows():
             distance = haversine_distance(
                 customer['LAT_NUM'], customer['LON_NUM'],
                 branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
             )
-            customer_distances.append({
-                'customer_id': customer.name,  # Using index as customer ID
-                'ecn': customer['ECN'],
-                'branch_au': branch['BRANCH_AU'],
-                'distance': distance
-            })
+            distances.append((branch['BRANCH_AU'], distance))
         
-        customer_branch_distances.extend(customer_distances)
-    
-    # Convert to DataFrame for easier manipulation
-    distance_df = pd.DataFrame(customer_branch_distances)
-    
-    # Step 5a: Initial assignment - assign each customer to closest branch within max_distance
-    initial_assignments = {}
-    unassigned_customers = []
-    
-    for customer_id in customers_to_reassign.index:
-        customer_distances = distance_df[distance_df['customer_id'] == customer_id].sort_values('distance')
+        # Sort by distance and find closest within range
+        distances.sort(key=lambda x: x[1])
+        assigned = False
         
-        # Find closest branch within max_distance
-        closest_within_range = customer_distances[customer_distances['distance'] <= max_distance]
+        for branch_au, distance in distances:
+            if distance <= max_distance:
+                if branch_au not in customer_assignments:
+                    customer_assignments[branch_au] = []
+                
+                customer_assignments[branch_au].append({
+                    'customer_idx': customer.name,
+                    'distance': distance
+                })
+                assigned = True
+                break
         
-        if len(closest_within_range) > 0:
-            closest_branch = closest_within_range.iloc[0]['branch_au']
-            distance = closest_within_range.iloc[0]['distance']
+        if not assigned:
+            unassigned_customers.append(customer.name)
+    
+    # Handle capacity constraints
+    for branch_au, customers in customer_assignments.items():
+        if len(customers) > max_customers_per_branch:
+            # Sort by distance (farthest first) and remove excess
+            customers.sort(key=lambda x: x['distance'], reverse=True)
+            excess_customers = customers[max_customers_per_branch:]
+            customer_assignments[branch_au] = customers[:max_customers_per_branch]
             
-            if closest_branch not in initial_assignments:
-                initial_assignments[closest_branch] = []
-            
-            initial_assignments[closest_branch].append({
-                'customer_id': customer_id,
-                'ecn': closest_within_range.iloc[0]['ecn'],
-                'distance': distance
-            })
-        else:
-            unassigned_customers.append(customer_id)
-    
-    print(f"Initial assignment completed. {len(unassigned_customers)} customers remain unassigned (no branch within {max_distance} miles)")
-    
-    # Step 5b: Handle capacity constraints and rebalancing
-    def rebalance_branch_assignments(assignments, max_customers):
-        """Handle overflow by moving farthest customers to their next closest branch"""
-        changes_made = True
-        iteration = 0
-        
-        while changes_made and iteration < 100:  # Prevent infinite loops
-            changes_made = False
-            iteration += 1
-            
-            for branch_au, customers in list(assignments.items()):
-                if len(customers) > max_customers:
-                    # Sort customers by distance (farthest first)
-                    customers_sorted = sorted(customers, key=lambda x: x['distance'], reverse=True)
+            # Try to reassign excess customers to other branches
+            for excess_customer in excess_customers:
+                customer_idx = excess_customer['customer_idx']
+                customer_data = customers_to_reassign.loc[customer_idx]
+                
+                reassigned = False
+                for _, branch in identified_branch_coords.iterrows():
+                    if branch['BRANCH_AU'] == branch_au:
+                        continue
                     
-                    # Remove the farthest customer
-                    removed_customer = customers_sorted[0]
-                    assignments[branch_au] = customers_sorted[1:]
+                    distance = haversine_distance(
+                        customer_data['LAT_NUM'], customer_data['LON_NUM'],
+                        branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
+                    )
                     
-                    print(f"Iteration {iteration}: Removing customer {removed_customer['ecn']} from branch {branch_au} (distance: {removed_customer['distance']:.2f} miles)")
-                    
-                    # Find next closest branch for this customer
-                    customer_id = removed_customer['customer_id']
-                    customer_distances = distance_df[distance_df['customer_id'] == customer_id].sort_values('distance')
-                    
-                    # Try to assign to next closest branch within range
-                    assigned_to_new_branch = False
-                    for _, row in customer_distances.iterrows():
-                        candidate_branch = row['branch_au']
-                        candidate_distance = row['distance']
+                    if distance <= max_distance and len(customer_assignments.get(branch['BRANCH_AU'], [])) < max_customers_per_branch:
+                        if branch['BRANCH_AU'] not in customer_assignments:
+                            customer_assignments[branch['BRANCH_AU']] = []
                         
-                        # Skip current branch and branches outside range
-                        if candidate_branch == branch_au or candidate_distance > max_distance:
-                            continue
-                        
-                        # Assign to this branch
-                        if candidate_branch not in assignments:
-                            assignments[candidate_branch] = []
-                        
-                        assignments[candidate_branch].append({
-                            'customer_id': customer_id,
-                            'ecn': removed_customer['ecn'],
-                            'distance': candidate_distance
+                        customer_assignments[branch['BRANCH_AU']].append({
+                            'customer_idx': customer_idx,
+                            'distance': distance
                         })
-                        
-                        print(f"  -> Reassigned to branch {candidate_branch} (distance: {candidate_distance:.2f} miles)")
-                        assigned_to_new_branch = True
-                        changes_made = True
+                        reassigned = True
                         break
-                    
-                    if not assigned_to_new_branch:
-                        unassigned_customers.append(customer_id)
-                        print(f"  -> Could not reassign customer {removed_customer['ecn']} - added to unassigned list")
-        
-        return assignments
+                
+                if not reassigned:
+                    unassigned_customers.append(customer_idx)
     
-    # Perform rebalancing
-    print("\nStarting capacity rebalancing...")
-    final_assignments = rebalance_branch_assignments(initial_assignments, max_customers_per_branch)
-    
-    # Step 5c: Create final results DataFrame
-    final_customer_assignments = []
-    
-    for branch_au, customers in final_assignments.items():
-        for customer in customers:
-            customer_data = customers_to_reassign.loc[customer['customer_id']].copy()
-            final_customer_assignments.append({
-                'ECN': customer['ecn'],
-                'customer_id': customer['customer_id'],
-                'assigned_branch': branch_au,
-                'distance_to_branch': customer['distance'],
-                'LAT_NUM': customer_data['LAT_NUM'],
-                'LON_NUM': customer_data['LON_NUM'],
-                'BILLINGCITY': customer_data['BILLINGCITY'],
-                'BILLINGSTATE': customer_data['BILLINGSTATE']
-            })
-    
-    final_df = pd.DataFrame(final_customer_assignments)
-    
-    # Create summary statistics
-    branch_summary = []
-    for branch_au in identified_branches:
-        branch_customers = [c for c in final_assignments.get(branch_au, [])]
-        if branch_customers:
-            avg_distance = np.mean([c['distance'] for c in branch_customers])
-            max_distance_in_branch = max([c['distance'] for c in branch_customers])
-        else:
-            avg_distance = 0
-            max_distance_in_branch = 0
-        
-        branch_summary.append({
-            'branch_au': branch_au,
-            'customer_count': len(branch_customers),
-            'avg_distance': avg_distance,
-            'max_distance': max_distance_in_branch
-        })
-    
-    summary_df = pd.DataFrame(branch_summary)
-    
-    return final_df, summary_df, unassigned_customers
+    return customer_assignments, unassigned_customers
 
-def create_customer_portfolios_enhanced(customer_df, branch_df):
+def create_customer_au_dataframe(customer_df, branch_df):
     """
-    Enhanced portfolio creation with distance-based reassignment
+    Main function to create customer portfolio with AU assignments
+    Returns: DataFrame with customer details and assigned AU
     """
-    print("="*60)
-    print("STEP 1-4: CONSTRAINED CLUSTERING AND BRANCH ASSIGNMENT")
-    print("="*60)
     
-    # Steps 1-4: Original clustering and branch assignment
-    clustered_customers, cluster_info = constrained_clustering(
-        customer_df, min_size=200, max_size=280, max_radius=20
-    )
+    # Step 1: Create clusters
+    clustered_customers, cluster_info = constrained_clustering(customer_df)
     
     if len(cluster_info) == 0:
-        print("No valid clusters found with the given constraints")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), []
+        print("No valid clusters found")
+        return pd.DataFrame()
     
+    # Step 2: Assign clusters to branches
     cluster_branch_map = assign_clusters_to_branches(clustered_customers, cluster_info, branch_df)
     
-    print("\n" + "="*60)
-    print("STEP 5: DISTANCE-BASED CUSTOMER REASSIGNMENT")
-    print("="*60)
-    
-    # Step 5: Enhanced distance-based reassignment
-    final_assignments, branch_summary, unassigned = reassign_customers_by_distance(
-        clustered_customers, cluster_branch_map, branch_df, max_distance=20, max_customers_per_branch=280
+    # Step 3: Reassign customers by distance
+    customer_assignments, unassigned = reassign_customers_by_distance(
+        clustered_customers, cluster_branch_map, branch_df
     )
     
-    return final_assignments, branch_summary, cluster_branch_map, unassigned
-
-# Main execution function
-def run_complete_analysis(customer_df, branch_df):
-    """
-    Run the complete customer portfolio clustering analysis
-    """
-    print("Starting Enhanced Customer Portfolio Creation...")
-    print("="*80)
+    # Step 4: Create final DataFrame with customer details and AU assignment
+    final_results = []
     
-    # Execute the enhanced clustering
-    result_df, branch_summary, cluster_summary, unassigned_customers = create_customer_portfolios_enhanced(customer_df, branch_df)
-    
-    # Display enhanced results
-    if len(result_df) > 0:
-        print(f"\n" + "="*60)
-        print("FINAL RESULTS")
-        print("="*60)
-        print(f"Total customers assigned: {len(result_df)}")
-        print(f"Customers unassigned: {len(unassigned_customers)}")
-        print(f"Number of branches used: {len(branch_summary)}")
-        
-        print("\nBranch Summary (after distance-based reassignment):")
-        print(branch_summary.round(2))
-        
-        print("\nSample customer assignments:")
-        print(result_df[['ECN', 'assigned_branch', 'distance_to_branch', 'BILLINGCITY', 'BILLINGSTATE']].head(10))
-        
-        print("\nBranch capacity check:")
-        capacity_check = result_df.groupby('assigned_branch').size()
-        print(capacity_check)
-        
-        over_capacity = capacity_check[capacity_check > 280]
-        if len(over_capacity) > 0:
-            print(f"\nWARNING: Branches over capacity (>280): {list(over_capacity.index)}")
-        else:
-            print("\n✓ All branches are within capacity limits (≤280 customers)")
+    for branch_au, customers in customer_assignments.items():
+        for customer in customers:
+            customer_idx = customer['customer_idx']
+            customer_data = customer_df.loc[customer_idx]
             
-        print(f"\nDistance compliance check:")
-        distance_violations = result_df[result_df['distance_to_branch'] > 20]
-        if len(distance_violations) > 0:
-            print(f"WARNING: {len(distance_violations)} customers assigned beyond 20-mile limit")
-        else:
-            print("✓ All assigned customers are within 20-mile distance limit")
-        
-        # Additional statistics
-        print(f"\nAdditional Statistics:")
-        print(f"Average distance to branch: {result_df['distance_to_branch'].mean():.2f} miles")
-        print(f"Maximum distance to branch: {result_df['distance_to_branch'].max():.2f} miles")
-        print(f"Standard deviation of distances: {result_df['distance_to_branch'].std():.2f} miles")
-        
-        return {
-            'customer_assignments': result_df,
-            'branch_summary': branch_summary,
-            'cluster_summary': cluster_summary,
-            'unassigned_customers': unassigned_customers
-        }
-    else:
-        print("No customer portfolios could be created with the given constraints")
-        return None
+            final_results.append({
+                'ECN': customer_data['ECN'],
+                'BILLINGCITY': customer_data['BILLINGCITY'],
+                'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                'LAT_NUM': customer_data['LAT_NUM'],
+                'LON_NUM': customer_data['LON_NUM'],
+                'ASSIGNED_AU': branch_au,
+                'DISTANCE_TO_AU': round(customer['distance'], 2)
+            })
+    
+    result_df = pd.DataFrame(final_results)
+    
+    # Print summary
+    print(f"Total customers assigned: {len(result_df)}")
+    print(f"Customers unassigned: {len(unassigned)}")
+    print(f"Number of AUs used: {result_df['ASSIGNED_AU'].nunique()}")
+    
+    # AU assignment summary
+    au_summary = result_df.groupby('ASSIGNED_AU').agg({
+        'ECN': 'count',
+        'DISTANCE_TO_AU': ['mean', 'max']
+    }).round(2)
+    au_summary.columns = ['Customer_Count', 'Avg_Distance', 'Max_Distance']
+    print("\nAU Assignment Summary:")
+    print(au_summary)
+    
+    return result_df
 
-# Usage example (uncomment and modify variable names as needed):
-# results = run_complete_analysis(customer_df, branch_df)
-# 
-# if results:
-#     # Access the results
-#     customer_assignments = results['customer_assignments']
-#     branch_summary = results['branch_summary']
-#     cluster_summary = results['cluster_summary']
-#     unassigned_customers = results['unassigned_customers']
-#     
-#     # Save results to files
-#     customer_assignments.to_csv('customer_assignments.csv', index=False)
-#     branch_summary.to_csv('branch_summary.csv', index=False)
-#     cluster_summary.to_csv('cluster_summary.csv', index=False)
+# Usage:
+# customer_au_assignments = create_customer_au_dataframe(customer_df, branch_df)
+# print(customer_au_assignments.head())
+# customer_au_assignments.to_csv('customer_au_assignments.csv', index=False)
