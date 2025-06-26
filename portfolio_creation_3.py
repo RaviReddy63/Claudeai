@@ -24,7 +24,6 @@ def calculate_cluster_radius(customers_coords):
         distance = haversine_distance(centroid[0], centroid[1], coord[0], coord[1])
         if distance > max_distance:
             max_distance = distance
-        
     
     return max_distance
 
@@ -254,10 +253,14 @@ def create_customer_au_dataframe(customer_df, branch_df):
     final_results = []
     
     for branch_au, customers in customer_assignments.items():
-        customers['DISTANCE_TO_AU'] = customers['DISTANCE_TO_AU'].astype('float')
         for customer in customers:
             customer_idx = customer['customer_idx']
             customer_data = customer_df.loc[customer_idx]
+            
+            # Handle potential None values and ensure proper data types
+            distance_value = customer.get('distance', 0)
+            if distance_value is None:
+                distance_value = 0
             
             final_results.append({
                 'ECN': customer_data['ECN'],
@@ -266,7 +269,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
                 'LAT_NUM': customer_data['LAT_NUM'],
                 'LON_NUM': customer_data['LON_NUM'],
                 'ASSIGNED_AU': branch_au,
-                'DISTANCE_TO_AU': round(customer['distance'], 2)
+                'DISTANCE_TO_AU': round(float(distance_value), 2)
             })
     
     result_df = pd.DataFrame(final_results)
