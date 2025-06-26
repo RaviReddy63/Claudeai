@@ -292,6 +292,15 @@ def assign_geocoded_customers_to_portfolios(customers_without_coords, result_df,
                     nearest_type = assigned_customer['TYPE']
             
             if nearest_au is not None:
+                # Handle potential inf or None values for distance
+                try:
+                    if min_distance == float('inf') or min_distance is None:
+                        distance_value = None
+                    else:
+                        distance_value = round(float(min_distance), 2)
+                except (ValueError, TypeError):
+                    distance_value = None
+                
                 geocoded_results.append({
                     'ECN': customer['ECN'],
                     'BILLINGCITY': customer['BILLINGCITY'],
@@ -299,7 +308,7 @@ def assign_geocoded_customers_to_portfolios(customers_without_coords, result_df,
                     'LAT_NUM': lat,
                     'LON_NUM': lon,
                     'ASSIGNED_AU': nearest_au,
-                    'DISTANCE_TO_AU': round(float(min_distance), 2),
+                    'DISTANCE_TO_AU': distance_value,
                     'TYPE': nearest_type + '_GEOCODED'
                 })
                 print(f"  Assigned to AU {nearest_au} (distance: {min_distance:.2f} miles)")
