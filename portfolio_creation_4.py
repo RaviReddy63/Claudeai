@@ -1,6 +1,9 @@
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
+import time
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Calculate haversine distance in miles between two points"""
@@ -202,7 +205,225 @@ def reassign_customers_by_distance(clustered_customers, cluster_assignments, bra
     
     return customer_assignments, unassigned_customers
 
-def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=280):
+def geocode_address(street, city, state, max_retries=3):
+    """
+    Geocode an address to get latitude and longitude
+    """
+    geolocator = Nominatim(user_agent="customer_portfolio_assignment")
+    
+    # Construct address string
+    address_parts = []
+    if street and str(street).strip() and str(street).strip().lower() != 'nan':
+        address_parts.append(str(street).strip())
+    if city and str(city).strip() and str(city).strip().lower() != 'nan':
+        address_parts.append(str(city).strip())
+    if state and str(state).strip() and str(state).strip().lower() != 'nan':
+        address_parts.append(str(state).strip())
+    
+    if not address_parts:
+        return None, None
+    
+    address = ", ".join(address_parts)
+    
+    for attempt in range(max_retries):
+        try:
+            location = geolocator.geocode(address, timeout=10)
+            if location:
+                return location.latitude, location.longitude
+            else:
+                # Try with just city and state if full address fails
+                if len(address_parts) > 2:
+                    city_state_address = ", ".join(address_parts[-2:])
+                    location = geolocator.geocode(city_state_address, timeout=10)
+                    if location:
+                        return location.latitude, location.longitude
+                return None, None
+        except (GeocoderTimedOut, GeocoderUnavailable):
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Wait before retry
+                continue
+            else:
+                return None, None
+    
+    return None, None
+
+def assign_geocoded_customers_to_portfolios(customers_without_coords, result_df, branch_df):
+    """
+    Geocode customers without coordinates and assign them to nearest existing portfolios
+    With fallback logic for failed geocoding cases
+    """
+    print(f"\nProcessing {len(customers_without_coords)} customers without coordinates...")
+    
+    if len(customers_without_coords) == 0:
+        return pd.DataFrame()
+    
+    geocoded_results = []
+    failed_geocoding = []
+    
+    for idx, customer in customers_without_coords.iterrows():
+        print(f"Geocoding customer {idx}...")
+        
+        # Extract address components
+        street = customer.get('BILLINGSTREET', '')
+        city = customer.get('BILLINGCITY', '')
+        state = customer.get('BILLINGSTATE', '')
+        
+        # Attempt geocoding
+        lat, lon = geocode_address(street, city, state)
+        
+        if lat is not None and lon is not None:
+            print(f"  Successfully geocoded: {lat}, {lon}")
+            
+            # Find nearest portfolio (AU)
+            min_distance = float('inf')
+            nearest_au = None
+            nearest_type = None
+            
+            # Check against all existing assignments
+            for _, assigned_customer in result_df.iterrows():
+                distance = haversine_distance(
+                    lat, lon,
+                    assigned_customer['LAT_NUM'], assigned_customer['LON_NUM']
+                )
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_au = assigned_customer['ASSIGNED_AU']
+                    nearest_type = assigned_customer['TYPE']
+            
+            if nearest_au is not None:
+                geocoded_results.append({
+                    'ECN': customer['ECN'],
+                    'BILLINGCITY': customer['BILLINGCITY'],
+                    'BILLINGSTATE': customer['BILLINGSTATE'],
+                    'LAT_NUM': lat,
+                    'LON_NUM': lon,
+                    'ASSIGNED_AU': nearest_au,
+                    'DISTANCE_TO_AU': round(float(min_distance), 2),
+                    'TYPE': nearest_type + '_GEOCODED'
+                })
+                print(f"  Assigned to AU {nearest_au} (distance: {min_distance:.2f} miles)")
+            else:
+                failed_geocoding.append(idx)
+                print(f"  Could not find nearest AU")
+        else:
+            failed_geocoding.append(idx)
+            print(f"  Geocoding failed")
+        
+        # Small delay to be respectful to geocoding service
+        time.sleep(0.1)
+    
+    # Handle failed geocoding cases with fallback logic
+    fallback_results = []
+    if failed_geocoding:
+        print(f"\nProcessing {len(failed_geocoding)} failed geocoding cases with fallback logic...")
+        
+        for idx in failed_geocoding:
+            customer = customers_without_coords.loc[idx]
+            city = customer.get('BILLINGCITY', '').strip()
+            state = customer.get('BILLINGSTATE', '').strip()
+            
+            assigned = False
+            assigned_au = None
+            assigned_type = None
+            assignment_method = None
+            
+            print(f"  Processing customer {idx} with city: {city}, state: {state}")
+            
+            # Fallback 1: Look for other customers in the same city
+            if city and city.lower() != 'nan':
+                city_matches = result_df[
+                    (result_df['BILLINGCITY'].str.strip().str.lower() == city.lower()) |
+                    (result_df['BILLINGCITY'].str.contains(city, case=False, na=False))
+                ]
+                
+                if len(city_matches) > 0:
+                    # Get the most common AU assignment in this city
+                    au_counts = city_matches['ASSIGNED_AU'].value_counts()
+                    most_common_au = au_counts.index[0]
+                    
+                    # Get the type of the most common assignment
+                    au_type_match = city_matches[city_matches['ASSIGNED_AU'] == most_common_au]['TYPE'].iloc[0]
+                    
+                    assigned_au = most_common_au
+                    assigned_type = au_type_match + '_CITY_MATCH'
+                    assignment_method = 'city_match'
+                    assigned = True
+                    
+                    print(f"    Found {len(city_matches)} customers in same city, assigned to AU {assigned_au}")
+            
+            # Fallback 2: Assign to any centralized portfolio
+            if not assigned:
+                centralized_portfolios = result_df[result_df['TYPE'].str.contains('CENTRALIZED', na=False)]
+                
+                if len(centralized_portfolios) > 0:
+                    # Get AU with smallest centralized portfolio (for load balancing)
+                    centralized_au_counts = centralized_portfolios['ASSIGNED_AU'].value_counts()
+                    smallest_centralized_au = centralized_au_counts.index[-1]  # Last index has smallest count
+                    
+                    assigned_au = smallest_centralized_au
+                    assigned_type = 'CENTRALIZED_FALLBACK'
+                    assignment_method = 'centralized_fallback'
+                    assigned = True
+                    
+                    print(f"    Assigned to centralized portfolio AU {assigned_au}")
+                else:
+                    # Fallback 3: Assign to any available AU (last resort)
+                    if len(result_df) > 0:
+                        # Get AU with smallest portfolio overall
+                        all_au_counts = result_df['ASSIGNED_AU'].value_counts()
+                        smallest_au = all_au_counts.index[-1]
+                        
+                        assigned_au = smallest_au
+                        assigned_type = 'GENERAL_FALLBACK'
+                        assignment_method = 'general_fallback'
+                        assigned = True
+                        
+                        print(f"    Assigned to general portfolio AU {assigned_au}")
+            
+            if assigned:
+                fallback_results.append({
+                    'ECN': customer['ECN'],
+                    'BILLINGCITY': customer['BILLINGCITY'],
+                    'BILLINGSTATE': customer['BILLINGSTATE'],
+                    'LAT_NUM': None,  # No coordinates available
+                    'LON_NUM': None,  # No coordinates available
+                    'ASSIGNED_AU': assigned_au,
+                    'DISTANCE_TO_AU': None,  # Cannot calculate without coordinates
+                    'TYPE': assigned_type
+                })
+            else:
+                print(f"    Could not assign customer {idx} - no fallback options available")
+    
+    # Combine geocoded and fallback results
+    all_results = geocoded_results + fallback_results
+    final_df = pd.DataFrame(all_results)
+    
+    print(f"\nGeocoding and Fallback Summary:")
+    print(f"Successfully geocoded and assigned: {len(geocoded_results)}")
+    print(f"Assigned via fallback logic: {len(fallback_results)}")
+    print(f"Total processed: {len(all_results)}")
+    print(f"Still unassigned: {len(failed_geocoding) - len(fallback_results)}")
+    
+    if len(final_df) > 0:
+        print("\nAssignments by Type:")
+        type_summary = final_df.groupby('TYPE').agg({
+            'ECN': 'count'
+        })
+        type_summary.columns = ['Customer_Count']
+        print(type_summary)
+        
+        # Only show distance stats for customers with coordinates
+        geocoded_only = final_df.dropna(subset=['LAT_NUM', 'LON_NUM'])
+        if len(geocoded_only) > 0:
+            print("\nDistance Statistics (geocoded customers only):")
+            distance_summary = geocoded_only.groupby('TYPE').agg({
+                'DISTANCE_TO_AU': ['mean', 'max']
+            }).round(2)
+            distance_summary.columns = ['Avg_Distance', 'Max_Distance']
+            print(distance_summary)
+    
+    return final_df
     """
     Create centralized portfolios from unassigned customers
     No radius constraint, only size constraint
@@ -218,7 +439,9 @@ def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=2
     
     # Determine number of clusters needed
     n_customers = len(unassigned_customers_df)
-    n_clusters = max(1, n_customers // max_size)
+    n_clusters = n_customers // max_size
+    if n_clusters < 1:
+        n_clusters = 1
     
     print(f"Creating {n_clusters} centralized clusters from {n_customers} customers")
     
@@ -396,9 +619,16 @@ def create_customer_au_dataframe(customer_df, branch_df):
     
     print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
     
-    # Step 1: Create INMARKET clusters
+    # Separate customers with and without coordinates
+    customers_with_coords = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
+    customers_without_coords = customer_df[customer_df[['LAT_NUM', 'LON_NUM']].isnull().any(axis=1)].copy()
+    
+    print(f"Customers with coordinates: {len(customers_with_coords)}")
+    print(f"Customers without coordinates: {len(customers_without_coords)}")
+    
+    # Step 1: Create INMARKET clusters (only for customers with coordinates)
     print("Step 1: Creating INMARKET clusters...")
-    clustered_customers, cluster_info = constrained_clustering(customer_df)
+    clustered_customers, cluster_info = constrained_clustering(customers_with_coords)
     
     inmarket_results = []
     unassigned_customer_indices = []
@@ -420,7 +650,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
         for branch_au, customers in customer_assignments.items():
             for customer in customers:
                 customer_idx = customer['customer_idx']
-                customer_data = customer_df.loc[customer_idx]
+                customer_data = customers_with_coords.loc[customer_idx]
                 
                 distance_value = customer.get('distance', 0)
                 if distance_value is None:
@@ -454,7 +684,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
     final_unassigned = []
     
     if unassigned_customer_indices:
-        unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
+        unassigned_customers_df = customers_with_coords.loc[unassigned_customer_indices]
         
         centralized_assignments, remaining_customers = create_centralized_portfolios(
             unassigned_customers_df, branch_df
@@ -464,7 +694,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
         for branch_au, customers in centralized_assignments.items():
             for customer in customers:
                 customer_idx = customer['customer_idx']
-                customer_data = customer_df.loc[customer_idx]
+                customer_data = customers_with_coords.loc[customer_idx]
                 
                 distance_value = customer.get('distance', 0)
                 if distance_value is None:
@@ -483,16 +713,29 @@ def create_customer_au_dataframe(customer_df, branch_df):
         
         final_unassigned = remaining_customers
     
-    # Combine all results
+    # Combine all results from coordinate-based processing
     all_results = inmarket_results + centralized_results
     result_df = pd.DataFrame(all_results)
+    
+    # Step 5: Handle customers without coordinates by geocoding and assigning to nearest portfolio
+    geocoded_results_df = pd.DataFrame()
+    if len(customers_without_coords) > 0 and len(result_df) > 0:
+        print("\nStep 5: Processing customers without coordinates...")
+        geocoded_results_df = assign_geocoded_customers_to_portfolios(
+            customers_without_coords, result_df, branch_df
+        )
+        
+        # Combine with main results
+        if len(geocoded_results_df) > 0:
+            result_df = pd.concat([result_df, geocoded_results_df], ignore_index=True)
     
     # Print comprehensive summary
     print(f"\n=== FINAL COMPREHENSIVE SUMMARY ===")
     print(f"Total customers processed: {len(customer_df)}")
     print(f"INMARKET customers assigned: {len(inmarket_results)}")
     print(f"CENTRALIZED customers assigned: {len(centralized_results)}")
-    print(f"Final unassigned customers: {len(final_unassigned)}")
+    print(f"Geocoded customers assigned: {len(geocoded_results_df)}")
+    print(f"Final unassigned customers (with coordinates): {len(final_unassigned)}")
     print(f"Total assigned customers: {len(result_df)}")
     
     if len(result_df) > 0:
@@ -526,4 +769,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
 # Usage:
 # customer_au_assignments = create_customer_au_dataframe(customer_df, branch_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_with_centralized.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_with_centralized_and_geocoded.csv', index=False)
+
+# Note: To use geocoding functionality, you'll need to install geopy:
+# pip install geopy
