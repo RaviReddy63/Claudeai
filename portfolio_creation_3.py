@@ -144,18 +144,23 @@ def assign_clusters_to_branches(clustered_customers, cluster_info, branch_df):
         cluster_assignments.append({
             'cluster_id': cluster['cluster_id'],
             'assigned_branch': assigned_branch,
+            'cluster_to_branch_distance': min_distance
         })
     
     return pd.DataFrame(cluster_assignments)
 
-def reassign_customers_by_distance(clustered_customers, cluster_info, branch_df, max_distance=20, max_customers_per_branch=280):
+def reassign_customers_by_distance(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
     """Reassign customers based on direct distance to branches with capacity constraints"""
     
-    # Get identified branches
-    identified_branches = cluster_info['assigned_branch'].unique()
+    # Get identified branches from cluster assignments
+    identified_branches = cluster_assignments['assigned_branch'].unique()
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
     
+    print(f"Identified branches: {list(identified_branches)}")
+    print(f"Available branch coordinates: {len(identified_branch_coords)}")
+    
     customers_to_reassign = clustered_customers[clustered_customers['cluster'] != -1].copy()
+    print(f"Customers to reassign: {len(customers_to_reassign)}")
     
     # Calculate distances and assign to closest branch within range
     customer_assignments = {}
@@ -179,52 +184,21 @@ def reassign_customers_by_distance(clustered_customers, cluster_info, branch_df,
                 if branch_au not in customer_assignments:
                     customer_assignments[branch_au] = []
                 
-                customer_assignments[branch_au].append({
-                    'customer_idx': customer.name,
-                    'distance': distance
-                })
-                assigned = True
-                break
+                # Check capacity before adding
+                if len(customer_assignments[branch_au]) < max_customers_per_branch:
+                    customer_assignments[branch_au].append({
+                        'customer_idx': customer.name,
+                        'distance': distance
+                    })
+                    assigned = True
+                    break
         
         if not assigned:
             unassigned_customers.append(customer.name)
     
-    # Handle capacity constraints
-    for branch_au, customers in customer_assignments.items():
-        if len(customers) > max_customers_per_branch:
-            # Sort by distance (farthest first) and remove excess
-            customers.sort(key=lambda x: x['distance'], reverse=True)
-            excess_customers = customers[max_customers_per_branch:]
-            customer_assignments[branch_au] = customers[:max_customers_per_branch]
-            
-            # Try to reassign excess customers to other branches
-            for excess_customer in excess_customers:
-                customer_idx = excess_customer['customer_idx']
-                customer_data = customers_to_reassign.loc[customer_idx]
-                
-                reassigned = False
-                for _, branch in identified_branch_coords.iterrows():
-                    if branch['BRANCH_AU'] == branch_au:
-                        continue
-                    
-                    distance = haversine_distance(
-                        customer_data['LAT_NUM'], customer_data['LON_NUM'],
-                        branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
-                    )
-                    
-                    if distance <= max_distance and len(customer_assignments.get(branch['BRANCH_AU'], [])) < max_customers_per_branch:
-                        if branch['BRANCH_AU'] not in customer_assignments:
-                            customer_assignments[branch['BRANCH_AU']] = []
-                        
-                        customer_assignments[branch['BRANCH_AU']].append({
-                            'customer_idx': customer_idx,
-                            'distance': distance
-                        })
-                        reassigned = True
-                        break
-                
-                if not reassigned:
-                    unassigned_customers.append(customer_idx)
+    # Sort customers within each branch by distance (closest first)
+    for branch_au in customer_assignments:
+        customer_assignments[branch_au].sort(key=lambda x: x['distance'])
     
     return customer_assignments, unassigned_customers
 
@@ -234,22 +208,31 @@ def create_customer_au_dataframe(customer_df, branch_df):
     Returns: DataFrame with customer details and assigned AU
     """
     
+    print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
+    
     # Step 1: Create clusters
+    print("Step 1: Creating clusters...")
     clustered_customers, cluster_info = constrained_clustering(customer_df)
     
     if len(cluster_info) == 0:
         print("No valid clusters found")
         return pd.DataFrame()
     
+    print(f"Created {len(cluster_info)} clusters")
+    
     # Step 2: Assign clusters to branches
-    cluster_branch_map = assign_clusters_to_branches(clustered_customers, cluster_info, branch_df)
+    print("Step 2: Assigning clusters to branches...")
+    cluster_assignments = assign_clusters_to_branches(clustered_customers, cluster_info, branch_df)
+    print(f"Cluster assignments created: {len(cluster_assignments)}")
     
     # Step 3: Reassign customers by distance
+    print("Step 3: Reassigning customers by distance...")
     customer_assignments, unassigned = reassign_customers_by_distance(
-        clustered_customers, cluster_branch_map, branch_df
+        clustered_customers, cluster_assignments, branch_df
     )
     
     # Step 4: Create final DataFrame with customer details and AU assignment
+    print("Step 4: Creating final DataFrame...")
     final_results = []
     
     for branch_au, customers in customer_assignments.items():
@@ -275,18 +258,25 @@ def create_customer_au_dataframe(customer_df, branch_df):
     result_df = pd.DataFrame(final_results)
     
     # Print summary
+    print(f"\n=== FINAL SUMMARY ===")
     print(f"Total customers assigned: {len(result_df)}")
     print(f"Customers unassigned: {len(unassigned)}")
-    print(f"Number of AUs used: {result_df['ASSIGNED_AU'].nunique()}")
+    print(f"Number of AUs used: {result_df['ASSIGNED_AU'].nunique() if len(result_df) > 0 else 0}")
     
-    # AU assignment summary
-    au_summary = result_df.groupby('ASSIGNED_AU').agg({
-        'ECN': 'count',
-        'DISTANCE_TO_AU': ['mean', 'max']
-    }).round(2)
-    au_summary.columns = ['Customer_Count', 'Avg_Distance', 'Max_Distance']
-    print("\nAU Assignment Summary:")
-    print(au_summary)
+    if len(result_df) > 0:
+        # AU assignment summary
+        au_summary = result_df.groupby('ASSIGNED_AU').agg({
+            'ECN': 'count',
+            'DISTANCE_TO_AU': ['mean', 'max']
+        }).round(2)
+        au_summary.columns = ['Customer_Count', 'Avg_Distance', 'Max_Distance']
+        print("\nAU Assignment Summary:")
+        print(au_summary)
+        
+        # Verify nearest branch assignment
+        print(f"\nDistance verification:")
+        print(f"Average distance to assigned AU: {result_df['DISTANCE_TO_AU'].mean():.2f} miles")
+        print(f"Maximum distance to assigned AU: {result_df['DISTANCE_TO_AU'].max():.2f} miles")
     
     return result_df
 
