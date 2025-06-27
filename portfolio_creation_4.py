@@ -218,7 +218,10 @@ def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=2
     
     # Determine number of clusters needed
     n_customers = len(unassigned_customers_df)
-    n_clusters = max(1, n_customers // max_size)
+    if n_customers <= max_size:
+        n_clusters = 1
+    else:
+        n_clusters = n_customers // max_size
     
     print(f"Creating {n_clusters} centralized clusters from {n_customers} customers")
     
@@ -388,13 +391,17 @@ def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=2
     
     return centralized_assignments, remaining_customers
 
-def create_customer_au_dataframe(customer_df, branch_df):
+def create_customer_au_dataframe(customer_df, branch_df, banker_df):
     """
-    Main function to create customer portfolio with AU assignments
-    Returns: DataFrame with customer details, assigned AU, and portfolio type
+    Main function to create customer portfolio with AU assignments and banker information
+    Returns: DataFrame with customer details, assigned AU, banker info, and portfolio type
     """
     
-    print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
+    print(f"Starting with {len(customer_df)} customers, {len(branch_df)} branches, and {len(banker_df)} bankers")
+    
+    # Create branch-banker lookup by merging on BRANCH_AU (assuming banker_df has BRANCH_AU column)
+    # If banker_df uses a different column name for branch identifier, adjust accordingly
+    branch_banker_df = branch_df.merge(banker_df, left_on='BRANCH_AU', right_on='BRANCH_AU', how='left')
     
     # Step 1: Create INMARKET clusters
     print("Step 1: Creating INMARKET clusters...")
@@ -416,8 +423,11 @@ def create_customer_au_dataframe(customer_df, branch_df):
             clustered_customers, cluster_assignments, branch_df
         )
         
-        # Create INMARKET results
+        # Create INMARKET results with banker info
         for branch_au, customers in customer_assignments.items():
+            # Get banker info for this branch
+            banker_info = branch_banker_df[branch_banker_df['BRANCH_AU'] == branch_au].iloc[0] if len(branch_banker_df[branch_banker_df['BRANCH_AU'] == branch_au]) > 0 else None
+            
             for customer in customers:
                 customer_idx = customer['customer_idx']
                 customer_data = customer_df.loc[customer_idx]
@@ -426,7 +436,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
                 if distance_value is None:
                     distance_value = 0
                 
-                inmarket_results.append({
+                result_row = {
                     'ECN': customer_data['ECN'],
                     'BILLINGCITY': customer_data['BILLINGCITY'],
                     'BILLINGSTATE': customer_data['BILLINGSTATE'],
@@ -435,7 +445,19 @@ def create_customer_au_dataframe(customer_df, branch_df):
                     'ASSIGNED_AU': branch_au,
                     'DISTANCE_TO_AU': round(float(distance_value), 2),
                     'TYPE': 'INMARKET'
-                })
+                }
+                
+                # Add banker information
+                if banker_info is not None:
+                    result_row['BANKER_NAME'] = banker_info.get('NAME', '')
+                    result_row['BANKER_STREET'] = banker_info.get('STREET', '')
+                    result_row['BANKER_CITY'] = banker_info.get('CITY', '')
+                else:
+                    result_row['BANKER_NAME'] = ''
+                    result_row['BANKER_STREET'] = ''
+                    result_row['BANKER_CITY'] = ''
+                
+                inmarket_results.append(result_row)
         
         # Collect unassigned customers for centralized processing
         unassigned_customer_indices.extend(unassigned)
@@ -460,8 +482,11 @@ def create_customer_au_dataframe(customer_df, branch_df):
             unassigned_customers_df, branch_df
         )
         
-        # Create CENTRALIZED results
+        # Create CENTRALIZED results with banker info
         for branch_au, customers in centralized_assignments.items():
+            # Get banker info for this branch
+            banker_info = branch_banker_df[branch_banker_df['BRANCH_AU'] == branch_au].iloc[0] if len(branch_banker_df[branch_banker_df['BRANCH_AU'] == branch_au]) > 0 else None
+            
             for customer in customers:
                 customer_idx = customer['customer_idx']
                 customer_data = customer_df.loc[customer_idx]
@@ -470,7 +495,7 @@ def create_customer_au_dataframe(customer_df, branch_df):
                 if distance_value is None:
                     distance_value = 0
                 
-                centralized_results.append({
+                result_row = {
                     'ECN': customer_data['ECN'],
                     'BILLINGCITY': customer_data['BILLINGCITY'],
                     'BILLINGSTATE': customer_data['BILLINGSTATE'],
@@ -479,7 +504,19 @@ def create_customer_au_dataframe(customer_df, branch_df):
                     'ASSIGNED_AU': branch_au,
                     'DISTANCE_TO_AU': round(float(distance_value), 2),
                     'TYPE': 'CENTRALIZED'
-                })
+                }
+                
+                # Add banker information
+                if banker_info is not None:
+                    result_row['BANKER_NAME'] = banker_info.get('NAME', '')
+                    result_row['BANKER_STREET'] = banker_info.get('STREET', '')
+                    result_row['BANKER_CITY'] = banker_info.get('CITY', '')
+                else:
+                    result_row['BANKER_NAME'] = ''
+                    result_row['BANKER_STREET'] = ''
+                    result_row['BANKER_CITY'] = ''
+                
+                centralized_results.append(result_row)
         
         final_unassigned = remaining_customers
     
@@ -524,6 +561,6 @@ def create_customer_au_dataframe(customer_df, branch_df):
     return result_df
 
 # Usage:
-# customer_au_assignments = create_customer_au_dataframe(customer_df, branch_df)
+# customer_au_assignments = create_customer_au_dataframe(customer_df, branch_df, banker_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_with_centralized.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_with_banker_info.csv', index=False)
