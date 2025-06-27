@@ -229,7 +229,7 @@ def reassign_customers_by_distance(clustered_customers, cluster_assignments, bra
 def create_customer_au_dataframe(customer_df, branch_df):
     """
     Main function to create customer portfolio with AU assignments
-    Returns: DataFrame with customer details and assigned AU
+    Returns: DataFrame with customer details and assigned AU including branch details
     """
     
     print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
@@ -265,11 +265,32 @@ def create_customer_au_dataframe(customer_df, branch_df):
         clustered_customers, cluster_assignments, branch_df_clean
     )
     
-    # Step 4: Create final DataFrame with customer details and AU assignment
-    print("Step 4: Creating final DataFrame...")
+    # Step 4: Create branch lookup dictionary for efficient access
+    print("Step 4: Creating branch lookup...")
+    branch_lookup = {}
+    for _, branch in branch_df.iterrows():
+        branch_lookup[branch['BRANCH_AU']] = {
+            'NAME': branch.get('NAME', ''),
+            'STREET': branch.get('STREET', ''),
+            'CITY': branch.get('CITY', ''),
+            'BRANCH_LAT_NUM': branch.get('BRANCH_LAT_NUM', 0.0),
+            'BRANCH_LON_NUM': branch.get('BRANCH_LON_NUM', 0.0)
+        }
+    
+    # Step 5: Create final DataFrame with customer details and AU assignment
+    print("Step 5: Creating final DataFrame...")
     final_results = []
     
     for branch_au, customers in customer_assignments.items():
+        # Get branch details
+        branch_details = branch_lookup.get(branch_au, {
+            'NAME': '',
+            'STREET': '',
+            'CITY': '',
+            'BRANCH_LAT_NUM': 0.0,
+            'BRANCH_LON_NUM': 0.0
+        })
+        
         for customer in customers:
             customer_idx = customer['customer_idx']
             
@@ -292,6 +313,11 @@ def create_customer_au_dataframe(customer_df, branch_df):
                 'LAT_NUM': customer_data.get('LAT_NUM', 0.0),
                 'LON_NUM': customer_data.get('LON_NUM', 0.0),
                 'ASSIGNED_AU': branch_au,
+                'AU_NAME': branch_details['NAME'],
+                'AU_STREET': branch_details['STREET'],
+                'AU_CITY': branch_details['CITY'],
+                'AU_LAT_NUM': branch_details['BRANCH_LAT_NUM'],
+                'AU_LON_NUM': branch_details['BRANCH_LON_NUM'],
                 'DISTANCE_TO_AU': round(float(distance_value), 2)
             }
             
@@ -313,8 +339,8 @@ def create_customer_au_dataframe(customer_df, branch_df):
     print(f"Number of AUs used: {result_df['ASSIGNED_AU'].nunique() if len(result_df) > 0 else 0}")
     
     if len(result_df) > 0:
-        # AU assignment summary
-        au_summary = result_df.groupby('ASSIGNED_AU').agg({
+        # AU assignment summary with branch details
+        au_summary = result_df.groupby(['ASSIGNED_AU', 'AU_NAME', 'AU_CITY']).agg({
             'ECN': 'count',
             'DISTANCE_TO_AU': ['mean', 'max']
         }).round(2)
