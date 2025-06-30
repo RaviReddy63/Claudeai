@@ -1,4 +1,23 @@
-import pandas as pd
+def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
+    """Get average financial metrics for a portfolio using customer list"""
+    if not portfolio_customers:
+        return None, None, None
+    
+    if isinstance(portfolio_customers, set):
+        customer_list = list(portfolio_customers)
+    else:
+        customer_list = portfolio_customers
+    
+    portfolio_data = client_groups_df[client_groups_df['CG_ECN'].isin(customer_list)]
+    
+    if len(portfolio_data) == 0:
+        return None, None, None
+    
+    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    
+    return avg_deposit, avg_gross_sales, avg_bank_revenueimport pandas as pd
 import numpy as np
 
 def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
@@ -46,8 +65,19 @@ def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch
         (active_portfolio_df['DIRECTOR_NAME'] == 'Mojgan Madadi')
     ].copy()
     
-    # Get customer lists for centralized portfolios
+    # Get customer lists for ALL portfolios (both IN MARKET and CENTRALIZED)
     portfolio_customers = {}
+    
+    # Add IN MARKET portfolio customers
+    for _, portfolio in existing_inmarket.iterrows():
+        port_code = portfolio['PORT_CODE']
+        portfolio_customer_list = client_groups_df[
+            (client_groups_df['CG_PORTFOLIO_CD'] == port_code) &
+            (client_groups_df['ISPORTFOLIOACTIVE'] == 1)
+        ]['CG_ECN'].tolist()
+        portfolio_customers[port_code] = set(portfolio_customer_list)
+    
+    # Add CENTRALIZED portfolio customers
     for _, portfolio in existing_centralized.iterrows():
         port_code = portfolio['PORT_CODE']
         portfolio_customer_list = client_groups_df[
@@ -66,26 +96,22 @@ def calculate_customer_overlap(new_customers, existing_customers):
     overlap = len(new_customer_set.intersection(existing_customers))
     return overlap
 
-def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
-    """Get average financial metrics for a portfolio"""
-    if not portfolio_customers:
-        return None, None, None
-    
-    if isinstance(portfolio_customers, set):
-        customer_list = list(portfolio_customers)
-    else:
-        customer_list = portfolio_customers
-    
-    portfolio_data = client_groups_df[client_groups_df['CG_ECN'].isin(customer_list)]
+def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_groups_df):
+    """Get average financial metrics for a portfolio using portfolio code from CLIENT_GROUPS_DF_NEW"""
+    portfolio_data = client_groups_df[
+        (client_groups_df['CG_PORTFOLIO_CD'] == portfolio_code) &
+        (client_groups_df['ISPORTFOLIOACTIVE'] == 1)
+    ]
     
     if len(portfolio_data) == 0:
-        return None, None, None
+        return None, None, None, 0
     
     avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
     avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
     avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    portfolio_size = len(portfolio_data)
     
-    return avg_deposit, avg_gross_sales, avg_bank_revenue
+    return avg_deposit, avg_gross_sales, avg_bank_revenue, portfolio_size
 
 def count_new_customers_not_in_active_portfolios(customer_au_assignments, client_groups_df):
     """Count customers in new portfolios that are not part of any active existing portfolio"""
@@ -164,9 +190,11 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             existing_customers = existing_portfolio_customers.get(existing_portfolio, set())
             overlap_count = calculate_customer_overlap(new_customers, existing_customers)
             
-            # Get financial metrics
+            # Get financial metrics using portfolio code for existing portfolio
+            existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(existing_portfolio, client_groups_df)
+            
+            # Get financial metrics for new portfolio using customer list
             new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-            existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue = get_portfolio_financial_metrics(existing_customers, client_groups_df)
             
             all_tags.append({
                 'NEW_AU': new_au,
@@ -180,6 +208,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGING_CRITERIA': 'CLOSEST_DISTANCE',
                 'DISTANCE_MILES': combo['distance'],
                 'CUSTOMER_OVERLAP_COUNT': overlap_count,
+                'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
                 'EXISTING_AVG_DEPOSIT_BAL': existing_avg_deposit,
                 'EXISTING_AVG_GROSS_SALES': existing_avg_gross_sales,
                 'EXISTING_AVG_BANK_REVENUE': existing_avg_bank_revenue,
@@ -214,6 +243,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                     'TAGGING_CRITERIA': 'UNTAGGED',
                     'DISTANCE_MILES': None,
                     'CUSTOMER_OVERLAP_COUNT': 0,
+                    'EXISTING_PORTFOLIO_SIZE': 0,
                     'EXISTING_AVG_DEPOSIT_BAL': None,
                     'EXISTING_AVG_GROSS_SALES': None,
                     'EXISTING_AVG_BANK_REVENUE': None,
@@ -263,9 +293,11 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             if new_au in used_new_centralized or existing_portfolio in used_existing_centralized or combo['overlap_count'] == 0:
                 continue
             
-            # Get financial metrics
+            # Get financial metrics using portfolio code for existing portfolio
+            existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(existing_portfolio, client_groups_df)
+            
+            # Get financial metrics for new portfolio using customer list
             new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(combo['new_customers'], client_groups_df)
-            existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue = get_portfolio_financial_metrics(combo['existing_customers'], client_groups_df)
             
             all_tags.append({
                 'NEW_AU': new_au,
@@ -279,6 +311,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGING_CRITERIA': 'MAX_CUSTOMER_OVERLAP',
                 'DISTANCE_MILES': None,
                 'CUSTOMER_OVERLAP_COUNT': combo['overlap_count'],
+                'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
                 'EXISTING_AVG_DEPOSIT_BAL': existing_avg_deposit,
                 'EXISTING_AVG_GROSS_SALES': existing_avg_gross_sales,
                 'EXISTING_AVG_BANK_REVENUE': existing_avg_bank_revenue,
@@ -313,6 +346,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                     'TAGGING_CRITERIA': 'UNTAGGED',
                     'DISTANCE_MILES': None,
                     'CUSTOMER_OVERLAP_COUNT': 0,
+                    'EXISTING_PORTFOLIO_SIZE': 0,
                     'EXISTING_AVG_DEPOSIT_BAL': None,
                     'EXISTING_AVG_GROSS_SALES': None,
                     'EXISTING_AVG_BANK_REVENUE': None,
