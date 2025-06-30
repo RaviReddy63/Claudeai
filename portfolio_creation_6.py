@@ -2,8 +2,6 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.neighbors import BallTree
-from scipy.optimize import linear_sum_assignment
-from multiprocessing import Pool, cpu_count
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -222,8 +220,11 @@ def assign_clusters_to_branches_vectorized(cluster_info, branch_df):
     
     return pd.DataFrame(cluster_assignments)
 
-def hungarian_assign_customers_to_branches_optimized(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
-    """Optimized Hungarian algorithm with pre-computed distance matrices"""
+def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
+    """
+    Fast greedy assignment instead of Hungarian algorithm
+    Assigns customers to nearest available branch with capacity
+    """
     
     identified_branches = cluster_assignments['assigned_branch'].unique()
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
@@ -250,58 +251,60 @@ def hungarian_assign_customers_to_branches_optimized(clustered_customers, cluste
     customer_indices = list(customers_to_assign.index)
     branch_aus = list(identified_branch_coords['BRANCH_AU'])
     
-    # Create expanded matrix for capacity constraints
-    total_slots = len(branch_aus) * max_customers_per_branch
-    expanded_distance_matrix = np.full((len(customer_indices), total_slots), np.inf)
-    
-    slot_to_branch = {}
-    slot_idx = 0
-    for j, branch_au in enumerate(branch_aus):
-        for slot in range(max_customers_per_branch):
-            expanded_distance_matrix[:, slot_idx] = distance_matrix[:, j]
-            slot_to_branch[slot_idx] = branch_au
-            slot_idx += 1
-    
-    # Make matrix square and apply Hungarian algorithm
-    max_dim = max(len(customer_indices), total_slots)
-    square_matrix = np.full((max_dim, max_dim), 1000000.0)  # High cost for dummy assignments
-    square_matrix[:len(customer_indices), :total_slots] = expanded_distance_matrix
-    
-    print("Applying Hungarian algorithm...")
-    customer_assignments_idx, slot_assignments_idx = linear_sum_assignment(square_matrix)
-    
-    # Process results
-    customer_assignments = {}
+    # Initialize branch capacities
+    branch_capacity = {branch_au: max_customers_per_branch for branch_au in branch_aus}
+    customer_assignments = {branch_au: [] for branch_au in branch_aus}
     unassigned_customers = []
     
-    for i, slot_idx in enumerate(slot_assignments_idx):
-        if i < len(customer_indices):
-            customer_idx = customer_indices[i]
-            
-            if slot_idx < total_slots:
-                assignment_cost = square_matrix[i, slot_idx]
-                
-                if assignment_cost < np.inf and assignment_cost < 1000000:
-                    branch_au = slot_to_branch[slot_idx]
-                    distance = assignment_cost
-                    
-                    if branch_au not in customer_assignments:
-                        customer_assignments[branch_au] = []
-                    
-                    customer_assignments[branch_au].append({
-                        'customer_idx': customer_idx,
-                        'distance': distance
-                    })
-                else:
-                    unassigned_customers.append(customer_idx)
-            else:
-                unassigned_customers.append(customer_idx)
+    print("Applying greedy assignment...")
+    
+    # Create list of (customer_idx, branch_idx, distance) sorted by distance
+    assignment_candidates = []
+    for i, customer_idx in enumerate(customer_indices):
+        for j, branch_au in enumerate(branch_aus):
+            distance = distance_matrix[i, j]
+            if distance < np.inf:  # Only consider valid assignments
+                assignment_candidates.append((i, customer_idx, j, branch_au, distance))
+    
+    # Sort by distance (greedy: assign closest first)
+    assignment_candidates.sort(key=lambda x: x[4])
+    
+    print(f"Processing {len(assignment_candidates)} possible assignments...")
+    
+    # Assign customers greedily
+    assigned_customers = set()
+    
+    for customer_i, customer_idx, branch_j, branch_au, distance in assignment_candidates:
+        # Skip if customer already assigned
+        if customer_idx in assigned_customers:
+            continue
+        
+        # Skip if branch is at capacity
+        if branch_capacity[branch_au] <= 0:
+            continue
+        
+        # Assign customer to branch
+        customer_assignments[branch_au].append({
+            'customer_idx': customer_idx,
+            'distance': distance
+        })
+        
+        assigned_customers.add(customer_idx)
+        branch_capacity[branch_au] -= 1
+    
+    # Find unassigned customers
+    for customer_idx in customer_indices:
+        if customer_idx not in assigned_customers:
+            unassigned_customers.append(customer_idx)
+    
+    # Remove empty branches
+    customer_assignments = {k: v for k, v in customer_assignments.items() if v}
     
     # Sort customers within each branch by distance
     for branch_au in customer_assignments:
         customer_assignments[branch_au].sort(key=lambda x: x['distance'])
     
-    print(f"Hungarian assignment complete:")
+    print(f"Greedy assignment complete:")
     print(f"  - Unassigned customers: {len(unassigned_customers)}")
     
     # Print assignment summary
@@ -312,95 +315,77 @@ def hungarian_assign_customers_to_branches_optimized(clustered_customers, cluste
     
     return customer_assignments, unassigned_customers
 
-def create_centralized_portfolios_optimized(unassigned_customers_df, branch_df, max_size=280):
-    """Optimized centralized portfolio creation"""
-    print(f"\nCreating centralized portfolios from {len(unassigned_customers_df)} unassigned customers...")
+def greedy_assign_centralized_customers(unassigned_customers_df, branch_df, max_customers_per_branch=280):
+    """
+    Greedy assignment for centralized customers - assign to nearest branch with capacity
+    """
+    print(f"\nGreedy assignment for {len(unassigned_customers_df)} centralized customers...")
     
     if len(unassigned_customers_df) == 0:
         return {}, []
-
-    coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
-    customer_indices = unassigned_customers_df.index.tolist()
     
-    n_customers = len(unassigned_customers_df)
-    
-    # Modified condition with safety check
-    if max_size > 0:
-        n_clusters = max(1, (n_customers + max_size - 1) // max_size)
-    else:
-        n_clusters = 1
-    
-    print(f"Creating {n_clusters} centralized clusters from {n_customers} customers")
-    
-    # Pre-compute customer-branch distance matrix
+    # Pre-compute distance matrix
+    customer_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
     branch_coords = branch_df[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
-    distance_matrix = compute_distance_matrix(coords, branch_coords)
+    distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
     
-    centralized_assignments = {}
+    customer_indices = unassigned_customers_df.index.tolist()
+    branch_aus = branch_df['BRANCH_AU'].tolist()
+    
+    # Initialize branch capacities
+    branch_capacity = {branch_au: max_customers_per_branch for branch_au in branch_aus}
+    centralized_assignments = {branch_au: [] for branch_au in branch_aus}
+    
+    # Create assignment candidates sorted by distance
+    assignment_candidates = []
+    for i, customer_idx in enumerate(customer_indices):
+        for j, branch_au in enumerate(branch_aus):
+            distance = distance_matrix[i, j]
+            assignment_candidates.append((i, customer_idx, j, branch_au, distance))
+    
+    # Sort by distance
+    assignment_candidates.sort(key=lambda x: x[4])
+    
+    # Assign customers greedily
+    assigned_customers = set()
     remaining_customers = []
     
-    if n_clusters == 1:
-        # Single cluster
-        total_distances = np.sum(distance_matrix, axis=0)
-        best_branch_idx = np.argmin(total_distances)
-        assigned_branch = branch_df.iloc[best_branch_idx]['BRANCH_AU']
+    for customer_i, customer_idx, branch_j, branch_au, distance in assignment_candidates:
+        # Skip if customer already assigned
+        if customer_idx in assigned_customers:
+            continue
         
-        print(f"Assigned all customers to branch {assigned_branch}")
+        # Skip if branch is at capacity
+        if branch_capacity[branch_au] <= 0:
+            continue
         
-        centralized_assignments[assigned_branch] = []
+        # Assign customer
+        if branch_au not in centralized_assignments:
+            centralized_assignments[branch_au] = []
         
-        for i, customer_idx in enumerate(customer_indices):
-            if i < max_size:
-                distance = distance_matrix[i, best_branch_idx]
-                centralized_assignments[assigned_branch].append({
-                    'customer_idx': customer_idx,
-                    'distance': distance
-                })
-            else:
-                remaining_customers.append(customer_idx)
-    else:
-        # Multiple clusters
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(coords)
+        centralized_assignments[branch_au].append({
+            'customer_idx': customer_idx,
+            'distance': distance
+        })
         
-        for cluster_id in range(n_clusters):
-            cluster_mask = cluster_labels == cluster_id
-            cluster_indices = [customer_indices[i] for i in range(len(customer_indices)) if cluster_mask[i]]
-            
-            if len(cluster_indices) == 0:
-                continue
-            
-            # Take only max_size customers
-            if len(cluster_indices) > max_size:
-                remaining_customers.extend(cluster_indices[max_size:])
-                cluster_indices = cluster_indices[:max_size]
-            
-            if len(cluster_indices) == 0:
-                continue
-            
-            # Find best branch for this cluster
-            cluster_distances = distance_matrix[cluster_mask][:len(cluster_indices)]
-            total_distances = np.sum(cluster_distances, axis=0)
-            best_branch_idx = np.argmin(total_distances)
-            assigned_branch = branch_df.iloc[best_branch_idx]['BRANCH_AU']
-            
-            if assigned_branch not in centralized_assignments:
-                centralized_assignments[assigned_branch] = []
-            
-            for i, customer_idx in enumerate(cluster_indices):
-                distance = cluster_distances[i, best_branch_idx]
-                centralized_assignments[assigned_branch].append({
-                    'customer_idx': customer_idx,
-                    'distance': distance
-                })
+        assigned_customers.add(customer_idx)
+        branch_capacity[branch_au] -= 1
+    
+    # Find remaining unassigned customers
+    for customer_idx in customer_indices:
+        if customer_idx not in assigned_customers:
+            remaining_customers.append(customer_idx)
+    
+    # Remove empty branches
+    centralized_assignments = {k: v for k, v in centralized_assignments.items() if v}
     
     print(f"Created {len(centralized_assignments)} centralized portfolios")
     print(f"Remaining unassigned customers: {len(remaining_customers)}")
     
     return centralized_assignments, remaining_customers
 
-def create_customer_au_dataframe_optimized(customer_df, branch_df):
-    """Optimized main function with vectorized operations"""
+def create_customer_au_dataframe_greedy(customer_df, branch_df):
+    """Main function with greedy assignment approach"""
     
     print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
     
@@ -418,9 +403,9 @@ def create_customer_au_dataframe_optimized(customer_df, branch_df):
         print("Step 2: Assigning INMARKET clusters to branches...")
         cluster_assignments = assign_clusters_to_branches_vectorized(cluster_info, branch_df)
         
-        # Step 3: Use Hungarian algorithm for optimal customer-AU assignment
-        print("Step 3: Using Hungarian algorithm for optimal INMARKET customer-AU assignment...")
-        customer_assignments, unassigned = hungarian_assign_customers_to_branches_optimized(
+        # Step 3: Use greedy assignment for customer-AU assignment
+        print("Step 3: Using greedy assignment for INMARKET customer-AU assignment...")
+        customer_assignments, unassigned = greedy_assign_customers_to_branches(
             clustered_customers, cluster_assignments, branch_df
         )
         
@@ -458,14 +443,14 @@ def create_customer_au_dataframe_optimized(customer_df, branch_df):
     
     print(f"Total unassigned customers for centralized processing: {len(unassigned_customer_indices)}")
     
-    # Step 4: Create CENTRALIZED portfolios
+    # Step 4: Create CENTRALIZED portfolios using greedy assignment
     centralized_results = []
     final_unassigned = []
     
     if unassigned_customer_indices:
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
-        centralized_assignments, remaining_customers = create_centralized_portfolios_optimized(
+        centralized_assignments, remaining_customers = greedy_assign_centralized_customers(
             unassigned_customers_df, branch_df
         )
         
@@ -532,6 +517,6 @@ def create_customer_au_dataframe_optimized(customer_df, branch_df):
     return result_df
 
 # Usage:
-# customer_au_assignments = create_customer_au_dataframe_optimized(customer_df, branch_df)
+# customer_au_assignments = create_customer_au_dataframe_greedy(customer_df, branch_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_optimized.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_greedy.csv', index=False)
