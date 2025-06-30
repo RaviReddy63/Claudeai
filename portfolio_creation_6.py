@@ -71,7 +71,7 @@ def find_candidates_spatial(customer_coords, seed_coord, max_radius, ball_tree=N
     
     return np.array([]), np.array([])
 
-def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, max_radius=20):
+def constrained_clustering_optimized(customer_df, min_size=200, max_size=240, max_radius=20):
     """Optimized clustering with vectorized operations and spatial indexing"""
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
@@ -197,7 +197,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, ma
     
     return customers_clean, pd.DataFrame(final_clusters)
 
-def constrained_clustering_no_radius(customer_df, min_size=200, max_size=280):
+def constrained_clustering_no_radius(customer_df, min_size=200, max_size=240):
     """
     Clustering with size constraints but NO radius constraint
     """
@@ -305,7 +305,7 @@ def assign_clusters_to_branches_vectorized(cluster_info, branch_df):
     
     return pd.DataFrame(cluster_assignments)
 
-def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
+def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=240):
     """
     Fast greedy assignment instead of Hungarian algorithm
     Assigns customers to nearest available branch with capacity
@@ -401,7 +401,7 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     return customer_assignments, unassigned_customers
 
 def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df, 
-                                         min_size=200, max_size=280):
+                                         min_size=200, max_size=240):
     """
     Create centralized clusters (no radius constraint) and assign to branches
     """
@@ -559,7 +559,7 @@ def create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_d
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
         centralized_results, final_unassigned = create_centralized_clusters_and_assign(
-            unassigned_customers_df, branch_df, min_size=200, max_size=280
+            unassigned_customers_df, branch_df, min_size=200, max_size=240
         )
     
     # Combine results
