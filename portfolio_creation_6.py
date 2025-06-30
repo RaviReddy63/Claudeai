@@ -87,7 +87,8 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, ma
     cluster_id = 0
     final_clusters = []
     
-    while np.sum(unassigned_mask) >= min_size:
+    unassigned_count = np.count_nonzero(unassigned_mask)
+    while unassigned_count >= min_size:
         # Find first unassigned customer as seed
         unassigned_indices = np.where(unassigned_mask)[0]
         seed_idx = unassigned_indices[0]
@@ -104,6 +105,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, ma
         
         if len(candidate_original_indices) == 0:
             unassigned_mask[seed_idx] = False
+            unassigned_count = np.count_nonzero(unassigned_mask)
             continue
         
         # Start with seed
@@ -154,7 +156,10 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, ma
             
             # Modified condition
             if len(current_cluster) > 0 and min_size > 0:
-                n_splits = min(3, len(current_cluster) // min_size)
+                if len(current_cluster) // min_size < 3:
+                    n_splits = len(current_cluster) // min_size
+                else:
+                    n_splits = 3
             else:
                 n_splits = 1
             
@@ -187,6 +192,86 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=280, ma
             # Mark all as unassigned for this iteration
             for idx in current_cluster:
                 unassigned_mask[idx] = False
+        
+        unassigned_count = np.count_nonzero(unassigned_mask)
+    
+    return customers_clean, pd.DataFrame(final_clusters)
+
+def constrained_clustering_no_radius(customer_df, min_size=200, max_size=280):
+    """
+    Clustering with size constraints but NO radius constraint
+    """
+    customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
+    customers_clean['cluster'] = -1
+    
+    # Pre-compute coordinates array
+    coords = customers_clean[['LAT_NUM', 'LON_NUM']].values
+    
+    # Build spatial index for efficient neighbor finding
+    coords_rad = np.radians(coords)
+    ball_tree = BallTree(coords_rad, metric='haversine')
+    
+    unassigned_mask = np.ones(len(customers_clean), dtype=bool)
+    cluster_id = 0
+    final_clusters = []
+    
+    unassigned_count = np.count_nonzero(unassigned_mask)
+    while unassigned_count >= min_size:
+        # Find first unassigned customer as seed
+        unassigned_indices = np.where(unassigned_mask)[0]
+        seed_idx = unassigned_indices[0]
+        seed_coord = coords[seed_idx]
+        
+        # Find ALL unassigned customers and sort by distance to seed
+        unassigned_coords = coords[unassigned_mask]
+        unassigned_positions = np.where(unassigned_mask)[0]
+        
+        # Calculate distances to seed
+        distances = haversine_distance_vectorized(
+            unassigned_coords[:, 0], unassigned_coords[:, 1],
+            seed_coord[0], seed_coord[1]
+        )
+        
+        # Sort by distance
+        sorted_indices = np.argsort(distances)
+        
+        # Take up to max_size closest customers
+        if max_size < len(sorted_indices):
+            cluster_size = max_size
+        else:
+            cluster_size = len(sorted_indices)
+        selected_local_indices = sorted_indices[:cluster_size]
+        selected_original_indices = unassigned_positions[selected_local_indices]
+        
+        # Create cluster (no radius constraint)
+        current_cluster = list(selected_original_indices)
+        current_coords = coords[selected_original_indices]
+        
+        # Only create cluster if it meets minimum size
+        if len(current_cluster) >= min_size:
+            # Calculate cluster statistics (for reporting, no constraint)
+            centroid = current_coords.mean(axis=0)
+            cluster_radius = calculate_cluster_radius_vectorized(current_coords)
+            
+            # Assign cluster
+            for idx in current_cluster:
+                customers_clean.iloc[idx, customers_clean.columns.get_loc('cluster')] = cluster_id
+                unassigned_mask[idx] = False
+            
+            final_clusters.append({
+                'cluster_id': cluster_id,
+                'size': len(current_cluster),
+                'radius': cluster_radius,  # For reporting only
+                'centroid_lat': centroid[0],
+                'centroid_lon': centroid[1]
+            })
+            
+            cluster_id += 1
+        else:
+            # Not enough customers for minimum cluster, stop
+            break
+        
+        unassigned_count = np.count_nonzero(unassigned_mask)
     
     return customers_clean, pd.DataFrame(final_clusters)
 
@@ -315,81 +400,106 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     
     return customer_assignments, unassigned_customers
 
-def greedy_assign_centralized_customers(unassigned_customers_df, branch_df, max_customers_per_branch=280):
+def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df, 
+                                         min_size=200, max_size=280):
     """
-    Greedy assignment for centralized customers - assign to nearest branch with capacity
+    Create centralized clusters (no radius constraint) and assign to branches
     """
-    print(f"\nGreedy assignment for {len(unassigned_customers_df)} centralized customers...")
+    print(f"\nCreating centralized clusters for {len(unassigned_customers_df)} customers...")
+    print(f"Cluster constraints: min_size={min_size}, max_size={max_size}, no radius limit")
     
     if len(unassigned_customers_df) == 0:
-        return {}, []
+        return [], []
     
-    # Pre-compute distance matrix
-    customer_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
-    branch_coords = branch_df[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
-    distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
+    # Step 1: Create clusters with no radius constraint
+    clustered_centralized, centralized_cluster_info = constrained_clustering_no_radius(
+        unassigned_customers_df, min_size=min_size, max_size=max_size
+    )
     
-    customer_indices = unassigned_customers_df.index.tolist()
-    branch_aus = branch_df['BRANCH_AU'].tolist()
+    centralized_results = []
+    final_unassigned = []
     
-    # Initialize branch capacities
-    branch_capacity = {branch_au: max_customers_per_branch for branch_au in branch_aus}
-    centralized_assignments = {branch_au: [] for branch_au in branch_aus}
-    
-    # Create assignment candidates sorted by distance
-    assignment_candidates = []
-    for i, customer_idx in enumerate(customer_indices):
-        for j, branch_au in enumerate(branch_aus):
-            distance = distance_matrix[i, j]
-            assignment_candidates.append((i, customer_idx, j, branch_au, distance))
-    
-    # Sort by distance
-    assignment_candidates.sort(key=lambda x: x[4])
-    
-    # Assign customers greedily
-    assigned_customers = set()
-    remaining_customers = []
-    
-    for customer_i, customer_idx, branch_j, branch_au, distance in assignment_candidates:
-        # Skip if customer already assigned
-        if customer_idx in assigned_customers:
-            continue
+    if len(centralized_cluster_info) > 0:
+        print(f"Created {len(centralized_cluster_info)} centralized clusters")
         
-        # Skip if branch is at capacity
-        if branch_capacity[branch_au] <= 0:
-            continue
+        # Print cluster statistics
+        print("\nCentralized Cluster Statistics:")
+        for _, cluster in centralized_cluster_info.iterrows():
+            print(f"  Cluster {cluster['cluster_id']}: {cluster['size']} customers, "
+                  f"radius: {cluster['radius']:.1f} miles")
         
-        # Assign customer
-        if branch_au not in centralized_assignments:
-            centralized_assignments[branch_au] = []
+        # Step 2: Assign clusters to branches
+        cluster_assignments = assign_clusters_to_branches_vectorized(
+            centralized_cluster_info, branch_df
+        )
         
-        centralized_assignments[branch_au].append({
-            'customer_idx': customer_idx,
-            'distance': distance
-        })
+        # Step 3: Assign customers within clusters to their assigned branches
+        for _, assignment in cluster_assignments.iterrows():
+            cluster_id = assignment['cluster_id']
+            assigned_branch = assignment['assigned_branch']
+            
+            # Get customers in this cluster
+            cluster_customers = clustered_centralized[
+                clustered_centralized['cluster'] == cluster_id
+            ]
+            
+            # Get branch coordinates for distance calculation
+            branch_coords = branch_df[
+                branch_df['BRANCH_AU'] == assigned_branch
+            ][['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].iloc[0]
+            
+            # Calculate distances from each customer to assigned branch
+            for idx, customer in cluster_customers.iterrows():
+                distance = haversine_distance_vectorized(
+                    customer['LAT_NUM'], customer['LON_NUM'],
+                    branch_coords['BRANCH_LAT_NUM'], branch_coords['BRANCH_LON_NUM']
+                )
+                
+                # Get original customer data
+                original_customer = unassigned_customers_df.loc[idx]
+                
+                try:
+                    distance_rounded = round(float(distance), 2)
+                except (ValueError, TypeError):
+                    distance_rounded = 0
+                
+                centralized_results.append({
+                    'customer_idx': idx,
+                    'ECN': original_customer['ECN'],
+                    'BILLINGCITY': original_customer['BILLINGCITY'],
+                    'BILLINGSTATE': original_customer['BILLINGSTATE'],
+                    'LAT_NUM': original_customer['LAT_NUM'],
+                    'LON_NUM': original_customer['LON_NUM'],
+                    'ASSIGNED_AU': assigned_branch,
+                    'DISTANCE_TO_AU': distance_rounded,
+                    'TYPE': 'CENTRALIZED',
+                    'CLUSTER_ID': cluster_id
+                })
         
-        assigned_customers.add(customer_idx)
-        branch_capacity[branch_au] -= 1
+        # Find customers that couldn't be clustered (too few remaining)
+        unassigned_centralized = clustered_centralized[
+            clustered_centralized['cluster'] == -1
+        ]
+        final_unassigned = list(unassigned_centralized.index)
+        
+    else:
+        print("No centralized clusters could be created")
+        final_unassigned = list(unassigned_customers_df.index)
     
-    # Find remaining unassigned customers
-    for customer_idx in customer_indices:
-        if customer_idx not in assigned_customers:
-            remaining_customers.append(customer_idx)
+    print(f"\nCentralized assignment results:")
+    print(f"  - Customers in centralized clusters: {len(centralized_results)}")
+    print(f"  - Remaining unassigned: {len(final_unassigned)}")
     
-    # Remove empty branches
-    centralized_assignments = {k: v for k, v in centralized_assignments.items() if v}
-    
-    print(f"Created {len(centralized_assignments)} centralized portfolios")
-    print(f"Remaining unassigned customers: {len(remaining_customers)}")
-    
-    return centralized_assignments, remaining_customers
+    return centralized_results, final_unassigned
 
-def create_customer_au_dataframe_greedy(customer_df, branch_df):
-    """Main function with greedy assignment approach"""
+def create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_df):
+    """
+    Modified main function that creates proper centralized clusters
+    """
     
     print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
     
-    # Step 1: Create INMARKET clusters
+    # Step 1: Create INMARKET clusters (with radius constraint)
     print("Step 1: Creating INMARKET clusters...")
     clustered_customers, cluster_info = constrained_clustering_optimized(customer_df)
     
@@ -416,8 +526,6 @@ def create_customer_au_dataframe_greedy(customer_df, branch_df):
                 customer_data = customer_df.loc[customer_idx]
                 
                 distance_value = customer.get('distance', 0)
-                
-                # Safe distance conversion with error handling
                 try:
                     distance_rounded = round(float(distance_value), 2)
                 except (ValueError, TypeError):
@@ -443,42 +551,16 @@ def create_customer_au_dataframe_greedy(customer_df, branch_df):
     
     print(f"Total unassigned customers for centralized processing: {len(unassigned_customer_indices)}")
     
-    # Step 4: Create CENTRALIZED portfolios using greedy assignment
+    # Step 4: Create CENTRALIZED clusters (no radius constraint) and assign
     centralized_results = []
     final_unassigned = []
     
     if unassigned_customer_indices:
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
-        centralized_assignments, remaining_customers = greedy_assign_centralized_customers(
-            unassigned_customers_df, branch_df
+        centralized_results, final_unassigned = create_centralized_clusters_and_assign(
+            unassigned_customers_df, branch_df, min_size=200, max_size=280
         )
-        
-        for branch_au, customers in centralized_assignments.items():
-            for customer in customers:
-                customer_idx = customer['customer_idx']
-                customer_data = customer_df.loc[customer_idx]
-                
-                distance_value = customer.get('distance', 0)
-                
-                # Safe distance conversion with error handling
-                try:
-                    distance_rounded = round(float(distance_value), 2)
-                except (ValueError, TypeError):
-                    distance_rounded = 0
-                
-                centralized_results.append({
-                    'ECN': customer_data['ECN'],
-                    'BILLINGCITY': customer_data['BILLINGCITY'],
-                    'BILLINGSTATE': customer_data['BILLINGSTATE'],
-                    'LAT_NUM': customer_data['LAT_NUM'],
-                    'LON_NUM': customer_data['LON_NUM'],
-                    'ASSIGNED_AU': branch_au,
-                    'DISTANCE_TO_AU': distance_rounded,
-                    'TYPE': 'CENTRALIZED'
-                })
-        
-        final_unassigned = remaining_customers
     
     # Combine results
     all_results = inmarket_results + centralized_results
@@ -513,10 +595,23 @@ def create_customer_au_dataframe_greedy(customer_df, branch_df):
         print(f"Average distance to assigned AU: {result_df['DISTANCE_TO_AU'].mean():.2f} miles")
         print(f"Maximum distance to assigned AU: {result_df['DISTANCE_TO_AU'].max():.2f} miles")
         print(f"Number of unique AUs used: {result_df['ASSIGNED_AU'].nunique()}")
+        
+        # Show centralized cluster sizes
+        if 'CLUSTER_ID' in result_df.columns:
+            centralized_clusters = result_df[result_df['TYPE'] == 'CENTRALIZED']
+            if len(centralized_clusters) > 0:
+                cluster_sizes = centralized_clusters.groupby('CLUSTER_ID').size()
+                min_cluster_size = cluster_sizes.min()
+                max_cluster_size = cluster_sizes.max()
+                avg_cluster_size = cluster_sizes.mean()
+                print(f"\nCentralized Cluster Sizes:")
+                print(f"  Min: {min_cluster_size}")
+                print(f"  Max: {max_cluster_size}")
+                print(f"  Average: {avg_cluster_size:.1f}")
     
     return result_df
 
 # Usage:
-# customer_au_assignments = create_customer_au_dataframe_greedy(customer_df, branch_df)
+# customer_au_assignments = create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_greedy.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_with_centralized_clusters.csv', index=False)
