@@ -7,7 +7,7 @@ def calculate_portfolio_centroids(customer_au_assignments):
     portfolio_centroids = customer_au_assignments.groupby(['ASSIGNED_AU', 'TYPE']).agg({
         'LAT_NUM': 'mean',
         'LON_NUM': 'mean',
-        'ECN': 'count'
+        'CG_ECN': 'count'
     }).reset_index()
     
     portfolio_centroids.columns = ['ASSIGNED_AU', 'TYPE', 'CENTROID_LAT', 'CENTROID_LON', 'CUSTOMER_COUNT']
@@ -57,7 +57,7 @@ def get_existing_centralized_portfolios_with_customers(active_portfolio_df, clie
         portfolio_customer_list = client_groups_df[
             (client_groups_df['CG_PORTFOLIO_CD'] == port_code) &
             (client_groups_df['ISPORTFOLIOACTIVE'] == 1)
-        ]['ECN'].tolist()
+        ]['CG_ECN'].tolist()
         
         portfolio_customers[port_code] = set(portfolio_customer_list)
     
@@ -111,7 +111,9 @@ def tag_inmarket_portfolios_by_distance(new_inmarket_portfolios, existing_inmark
         
         # Find closest existing portfolio
         if distances:
-            closest = min(distances, key=lambda x: x['distance'])
+            # Sort distances and get the closest one
+            distances_sorted = sorted(distances, key=lambda x: x['distance'])
+            closest = distances_sorted[0]
             
             inmarket_tags.append({
                 'NEW_AU': new_au,
@@ -146,7 +148,7 @@ def tag_centralized_portfolios_by_overlap(new_centralized_portfolios, customer_a
         new_customers = customer_au_assignments[
             (customer_au_assignments['ASSIGNED_AU'] == new_au) &
             (customer_au_assignments['TYPE'] == 'CENTRALIZED')
-        ]['ECN'].tolist()
+        ]['CG_ECN'].tolist()
         
         # Calculate overlap with each existing centralized portfolio
         overlaps = []
@@ -168,7 +170,9 @@ def tag_centralized_portfolios_by_overlap(new_centralized_portfolios, customer_a
         
         # Find portfolio with highest overlap
         if overlaps:
-            best_match = max(overlaps, key=lambda x: x['overlap_count'])
+            # Sort overlaps and get the one with highest overlap count
+            overlaps_sorted = sorted(overlaps, key=lambda x: x['overlap_count'], reverse=True)
+            best_match = overlaps_sorted[0]
             
             centralized_tags.append({
                 'NEW_AU': new_au,
