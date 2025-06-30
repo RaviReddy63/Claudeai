@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
+from scipy.optimize import linear_sum_assignment
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """Calculate haversine distance in miles between two points"""
@@ -149,9 +150,10 @@ def assign_clusters_to_branches(clustered_customers, cluster_info, branch_df):
     
     return pd.DataFrame(cluster_assignments)
 
-def reassign_customers_by_distance(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
-    """Reassign customers based on direct distance to branches with capacity constraints"""
-    
+def hungarian_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=280):
+    """
+    Use Hungarian algorithm for optimal customer-AU assignment with capacity constraints
+    """
     # Get identified branches from cluster assignments
     identified_branches = cluster_assignments['assigned_branch'].unique()
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
@@ -159,75 +161,126 @@ def reassign_customers_by_distance(clustered_customers, cluster_assignments, bra
     print(f"Identified branches: {list(identified_branches)}")
     print(f"Available branch coordinates: {len(identified_branch_coords)}")
     
-    customers_to_reassign = clustered_customers[clustered_customers['cluster'] != -1].copy()
-    print(f"Customers to reassign: {len(customers_to_reassign)}")
+    customers_to_assign = clustered_customers[clustered_customers['cluster'] != -1].copy()
+    print(f"Customers to assign: {len(customers_to_assign)}")
     
-    # KEY FIX: First find each customer's nearest identified AU and distance
-    customer_priorities = []
-    for _, customer in customers_to_reassign.iterrows():
-        distances = []
-        for _, branch in identified_branch_coords.iterrows():
+    if len(customers_to_assign) == 0 or len(identified_branch_coords) == 0:
+        return {}, list(customers_to_assign.index)
+    
+    # Create distance matrix: customers x branches
+    customer_indices = list(customers_to_assign.index)
+    branch_aus = list(identified_branch_coords['BRANCH_AU'])
+    
+    print(f"Creating distance matrix: {len(customer_indices)} customers x {len(branch_aus)} branches")
+    
+    # Calculate all distances
+    distance_matrix = np.full((len(customer_indices), len(branch_aus)), np.inf)
+    
+    for i, customer_idx in enumerate(customer_indices):
+        customer = customers_to_assign.loc[customer_idx]
+        for j, branch_au in enumerate(branch_aus):
+            branch = identified_branch_coords[identified_branch_coords['BRANCH_AU'] == branch_au].iloc[0]
             distance = haversine_distance(
                 customer['LAT_NUM'], customer['LON_NUM'],
                 branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
             )
-            distances.append((branch['BRANCH_AU'], distance))
+            
+            # Only allow assignment if within max_distance
+            if distance <= max_distance:
+                distance_matrix[i, j] = distance
+    
+    # Handle capacity constraints by creating virtual branches
+    # Each branch gets max_customers_per_branch "slots"
+    print(f"Creating virtual branches for capacity constraints...")
+    
+    # Create expanded matrix with virtual branches
+    total_slots = len(branch_aus) * max_customers_per_branch
+    expanded_distance_matrix = np.full((len(customer_indices), total_slots), np.inf)
+    
+    slot_to_branch = {}  # Maps slot index to branch AU
+    
+    slot_idx = 0
+    for j, branch_au in enumerate(branch_aus):
+        for slot in range(max_customers_per_branch):
+            expanded_distance_matrix[:, slot_idx] = distance_matrix[:, j]
+            slot_to_branch[slot_idx] = branch_au
+            slot_idx += 1
+    
+    print(f"Expanded matrix size: {len(customer_indices)} x {total_slots}")
+    
+    # Apply Hungarian algorithm
+    print("Applying Hungarian algorithm...")
+    
+    # Handle case where we have more customers than slots
+    if len(customer_indices) > total_slots:
+        print(f"Warning: More customers ({len(customer_indices)}) than available slots ({total_slots})")
+        # We'll process in batches or handle unassigned customers separately
         
-        # Sort by distance and get nearest
-        distances.sort(key=lambda x: x[1])
-        if distances:
-            nearest_au, nearest_distance = distances[0]
-            customer_priorities.append({
-                'customer_idx': customer.name,
-                'customer_data': customer,
-                'nearest_au': nearest_au,
-                'nearest_distance': nearest_distance,
-                'all_distances': distances
-            })
+    # Make matrix square by padding if necessary
+    if len(customer_indices) != total_slots:
+        max_dim = max(len(customer_indices), total_slots)
+        square_matrix = np.full((max_dim, max_dim), np.inf)
+        square_matrix[:len(customer_indices), :total_slots] = expanded_distance_matrix
+        
+        # Add high cost for dummy assignments
+        if len(customer_indices) < max_dim:
+            square_matrix[len(customer_indices):, :] = 1000000  # High cost for dummy customers
+        if total_slots < max_dim:
+            square_matrix[:, total_slots:] = 1000000  # High cost for dummy slots
+    else:
+        square_matrix = expanded_distance_matrix
     
-    # KEY FIX: Sort customers by distance to their nearest identified AU (closest first)
-    customer_priorities.sort(key=lambda x: x['nearest_distance'])
-    print(f"Sorted {len(customer_priorities)} customers by distance to nearest identified AU")
+    # Apply Hungarian algorithm
+    customer_assignments_idx, slot_assignments_idx = linear_sum_assignment(square_matrix)
     
-    # Now assign customers in priority order (closest to their nearest AU first)
+    print("Hungarian algorithm completed. Processing results...")
+    
+    # Process results
     customer_assignments = {}
     unassigned_customers = []
     
-    for customer_info in customer_priorities:
-        customer_idx = customer_info['customer_idx']
-        all_distances = customer_info['all_distances']
-        assigned = False
-        
-        # Try to assign to closest available branch within max_distance
-        for branch_au, distance in all_distances:
-            if distance <= max_distance:
-                if branch_au not in customer_assignments:
-                    customer_assignments[branch_au] = []
+    for i, slot_idx in enumerate(slot_assignments_idx):
+        if i < len(customer_indices):  # Real customer (not dummy)
+            customer_idx = customer_indices[i]
+            
+            if slot_idx < total_slots:  # Real slot (not dummy)
+                assignment_cost = square_matrix[i, slot_idx]
                 
-                # Check capacity before adding
-                if len(customer_assignments[branch_au]) < max_customers_per_branch:
+                if assignment_cost < np.inf and assignment_cost < 1000000:  # Valid assignment
+                    branch_au = slot_to_branch[slot_idx]
+                    distance = assignment_cost
+                    
+                    if branch_au not in customer_assignments:
+                        customer_assignments[branch_au] = []
+                    
                     customer_assignments[branch_au].append({
                         'customer_idx': customer_idx,
                         'distance': distance
                     })
-                    assigned = True
-                    break
-        
-        if not assigned:
-            unassigned_customers.append(customer_idx)
+                else:
+                    unassigned_customers.append(customer_idx)
+            else:
+                unassigned_customers.append(customer_idx)
     
-    # Sort customers within each branch by distance (closest first)
+    # Sort customers within each branch by distance
     for branch_au in customer_assignments:
         customer_assignments[branch_au].sort(key=lambda x: x['distance'])
     
-    print(f"Assignment complete: {sum(len(customers) for customers in customer_assignments.values())} assigned, {len(unassigned_customers)} unassigned")
+    print(f"Hungarian assignment complete:")
+    print(f"  - Assigned customers: {sum(len(customers) for customers in customer_assignments.values())}")
+    print(f"  - Unassigned customers: {len(unassigned_customers)}")
+    
+    # Print assignment summary
+    for branch_au, customers in customer_assignments.items():
+        if customers:
+            distances = [c['distance'] for c in customers]
+            print(f"  - Branch {branch_au}: {len(customers)} customers, avg distance: {np.mean(distances):.2f} miles")
     
     return customer_assignments, unassigned_customers
 
 def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=280):
     """
-    Create centralized portfolios from unassigned customers
-    No radius constraint, only size constraint
+    Create centralized portfolios from unassigned customers using Hungarian algorithm
     """
     print(f"\nCreating centralized portfolios from {len(unassigned_customers_df)} unassigned customers...")
     
@@ -240,170 +293,102 @@ def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=2
     
     # Determine number of clusters needed
     n_customers = len(unassigned_customers_df)
-    n_clusters = max(1, n_customers // max_size)
+    n_clusters = max(1, (n_customers + max_size - 1) // max_size)  # Ceiling division
     
     print(f"Creating {n_clusters} centralized clusters from {n_customers} customers")
     
-    centralized_assignments = {}
-    remaining_customers = []
-    
     if n_clusters == 1:
-        # If only one cluster possible, assign all to nearest branch
-        if n_customers <= max_size:
-            # Calculate centroid of all customers
-            centroid_lat = np.mean(coords[:, 0])
-            centroid_lon = np.mean(coords[:, 1])
-            
-            # Find nearest branch to centroid
-            min_distance = float('inf')
-            assigned_branch = None
-            
-            for _, branch in branch_df.iterrows():
+        # Single cluster - assign all to nearest branch using Hungarian algorithm
+        print("Single cluster - using Hungarian algorithm for branch assignment")
+        
+        # Create distance matrix: customers x branches
+        distance_matrix = np.full((len(customer_indices), len(branch_df)), np.inf)
+        
+        for i, customer_idx in enumerate(customer_indices):
+            customer = unassigned_customers_df.loc[customer_idx]
+            for j, (_, branch) in enumerate(branch_df.iterrows()):
                 distance = haversine_distance(
-                    centroid_lat, centroid_lon,
+                    customer['LAT_NUM'], customer['LON_NUM'],
                     branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
                 )
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    assigned_branch = branch['BRANCH_AU']
-            
-            # Assign all customers to this branch
-            centralized_assignments[assigned_branch] = []
-            for idx in customer_indices:
-                customer_data = unassigned_customers_df.loc[idx]
-                distance_to_branch = haversine_distance(
-                    customer_data['LAT_NUM'], customer_data['LON_NUM'],
-                    branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LAT_NUM'].iloc[0],
-                    branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LON_NUM'].iloc[0]
-                )
-                
+                distance_matrix[i, j] = distance
+        
+        # Find the branch with minimum total distance
+        total_distances = np.sum(distance_matrix, axis=0)
+        best_branch_idx = np.argmin(total_distances)
+        assigned_branch = branch_df.iloc[best_branch_idx]['BRANCH_AU']
+        
+        print(f"Assigned all customers to branch {assigned_branch}")
+        
+        centralized_assignments = {assigned_branch: []}
+        remaining_customers = []
+        
+        for i, customer_idx in enumerate(customer_indices):
+            if i < max_size:
+                distance = distance_matrix[i, best_branch_idx]
                 centralized_assignments[assigned_branch].append({
-                    'customer_idx': idx,
-                    'distance': distance_to_branch
+                    'customer_idx': customer_idx,
+                    'distance': distance
                 })
-        else:
-            # Too many customers for one cluster, put excess as remaining
-            remaining_customers = customer_indices[max_size:]
-            
-            # Assign first max_size customers
-            selected_customers = customer_indices[:max_size]
-            selected_coords = coords[:max_size]
-            
-            centroid_lat = np.mean(selected_coords[:, 0])
-            centroid_lon = np.mean(selected_coords[:, 1])
-            
-            # Find nearest branch
-            min_distance = float('inf')
-            assigned_branch = None
-            
-            for _, branch in branch_df.iterrows():
-                distance = haversine_distance(
-                    centroid_lat, centroid_lon,
-                    branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
-                )
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    assigned_branch = branch['BRANCH_AU']
-            
-            centralized_assignments[assigned_branch] = []
-            for idx in selected_customers:
-                customer_data = unassigned_customers_df.loc[idx]
-                distance_to_branch = haversine_distance(
-                    customer_data['LAT_NUM'], customer_data['LON_NUM'],
-                    branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LAT_NUM'].iloc[0],
-                    branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LON_NUM'].iloc[0]
-                )
-                
-                centralized_assignments[assigned_branch].append({
-                    'customer_idx': idx,
-                    'distance': distance_to_branch
-                })
+            else:
+                remaining_customers.append(customer_idx)
                 
     else:
         # Multiple clusters needed
+        print(f"Multiple clusters needed - using K-means + Hungarian algorithm")
+        
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         cluster_labels = kmeans.fit_predict(coords)
+        
+        centralized_assignments = {}
+        remaining_customers = []
         
         for cluster_id in range(n_clusters):
             cluster_mask = cluster_labels == cluster_id
             cluster_indices = [customer_indices[i] for i in range(len(customer_indices)) if cluster_mask[i]]
-            cluster_coords = coords[cluster_mask]
             
-            if len(cluster_indices) <= max_size:
-                # Calculate cluster centroid
-                centroid_lat = np.mean(cluster_coords[:, 0])
-                centroid_lon = np.mean(cluster_coords[:, 1])
+            if len(cluster_indices) == 0:
+                continue
                 
-                # Find nearest branch to centroid
-                min_distance = float('inf')
-                assigned_branch = None
-                
-                for _, branch in branch_df.iterrows():
-                    distance = haversine_distance(
-                        centroid_lat, centroid_lon,
-                        branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
-                    )
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        assigned_branch = branch['BRANCH_AU']
-                
-                # Assign customers to this branch
-                if assigned_branch not in centralized_assignments:
-                    centralized_assignments[assigned_branch] = []
-                
-                for idx in cluster_indices:
-                    customer_data = unassigned_customers_df.loc[idx]
-                    distance_to_branch = haversine_distance(
-                        customer_data['LAT_NUM'], customer_data['LON_NUM'],
-                        branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LAT_NUM'].iloc[0],
-                        branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LON_NUM'].iloc[0]
-                    )
-                    
-                    centralized_assignments[assigned_branch].append({
-                        'customer_idx': idx,
-                        'distance': distance_to_branch
-                    })
-            else:
-                # Cluster too large, keep only max_size customers, rest go to remaining
-                cluster_indices_trimmed = cluster_indices[:max_size]
+            print(f"Processing cluster {cluster_id} with {len(cluster_indices)} customers")
+            
+            # Take only max_size customers from this cluster
+            if len(cluster_indices) > max_size:
                 remaining_customers.extend(cluster_indices[max_size:])
-                
-                cluster_coords_trimmed = cluster_coords[:max_size]
-                centroid_lat = np.mean(cluster_coords_trimmed[:, 0])
-                centroid_lon = np.mean(cluster_coords_trimmed[:, 1])
-                
-                # Find nearest branch
-                min_distance = float('inf')
-                assigned_branch = None
-                
-                for _, branch in branch_df.iterrows():
+                cluster_indices = cluster_indices[:max_size]
+            
+            if len(cluster_indices) == 0:
+                continue
+            
+            # Create distance matrix for this cluster: customers x branches
+            cluster_distance_matrix = np.full((len(cluster_indices), len(branch_df)), np.inf)
+            
+            for i, customer_idx in enumerate(cluster_indices):
+                customer = unassigned_customers_df.loc[customer_idx]
+                for j, (_, branch) in enumerate(branch_df.iterrows()):
                     distance = haversine_distance(
-                        centroid_lat, centroid_lon,
+                        customer['LAT_NUM'], customer['LON_NUM'],
                         branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
                     )
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        assigned_branch = branch['BRANCH_AU']
-                
-                if assigned_branch not in centralized_assignments:
-                    centralized_assignments[assigned_branch] = []
-                
-                for idx in cluster_indices_trimmed:
-                    customer_data = unassigned_customers_df.loc[idx]
-                    distance_to_branch = haversine_distance(
-                        customer_data['LAT_NUM'], customer_data['LON_NUM'],
-                        branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LAT_NUM'].iloc[0],
-                        branch_df[branch_df['BRANCH_AU'] == assigned_branch]['BRANCH_LON_NUM'].iloc[0]
-                    )
-                    
-                    centralized_assignments[assigned_branch].append({
-                        'customer_idx': idx,
-                        'distance': distance_to_branch
-                    })
+                    cluster_distance_matrix[i, j] = distance
+            
+            # Find best branch for this cluster (minimum total distance)
+            total_distances = np.sum(cluster_distance_matrix, axis=0)
+            best_branch_idx = np.argmin(total_distances)
+            assigned_branch = branch_df.iloc[best_branch_idx]['BRANCH_AU']
+            
+            print(f"Cluster {cluster_id} assigned to branch {assigned_branch}")
+            
+            # Assign customers to this branch
+            if assigned_branch not in centralized_assignments:
+                centralized_assignments[assigned_branch] = []
+            
+            for i, customer_idx in enumerate(cluster_indices):
+                distance = cluster_distance_matrix[i, best_branch_idx]
+                centralized_assignments[assigned_branch].append({
+                    'customer_idx': customer_idx,
+                    'distance': distance
+                })
     
     print(f"Created {len(centralized_assignments)} centralized portfolios")
     print(f"Remaining unassigned customers: {len(remaining_customers)}")
@@ -412,7 +397,7 @@ def create_centralized_portfolios(unassigned_customers_df, branch_df, max_size=2
 
 def create_customer_au_dataframe(customer_df, branch_df):
     """
-    Main function to create customer portfolio with AU assignments
+    Main function to create customer portfolio with AU assignments using Hungarian algorithm
     Returns: DataFrame with customer details, assigned AU, and portfolio type
     """
     
@@ -432,9 +417,9 @@ def create_customer_au_dataframe(customer_df, branch_df):
         print("Step 2: Assigning INMARKET clusters to branches...")
         cluster_assignments = assign_clusters_to_branches(clustered_customers, cluster_info, branch_df)
         
-        # Step 3: Reassign customers by distance for INMARKET (WITH PRIORITY FIX)
-        print("Step 3: Reassigning INMARKET customers by distance with priority...")
-        customer_assignments, unassigned = reassign_customers_by_distance(
+        # Step 3: Use Hungarian algorithm for optimal customer-AU assignment
+        print("Step 3: Using Hungarian algorithm for optimal INMARKET customer-AU assignment...")
+        customer_assignments, unassigned = hungarian_assign_customers_to_branches(
             clustered_customers, cluster_assignments, branch_df
         )
         
@@ -548,4 +533,4 @@ def create_customer_au_dataframe(customer_df, branch_df):
 # Usage:
 # customer_au_assignments = create_customer_au_dataframe(customer_df, branch_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_with_priority_fix.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_hungarian.csv', index=False)
