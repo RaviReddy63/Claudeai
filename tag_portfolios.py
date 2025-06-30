@@ -75,23 +75,25 @@ def calculate_customer_overlap(new_customers, existing_customers):
     return overlap
 
 def tag_inmarket_portfolios_by_distance(new_inmarket_portfolios, existing_inmarket_portfolios):
-    """Tag new IN MARKET portfolios to existing ones based on closest distance"""
+    """Tag new IN MARKET portfolios to existing ones based on closest distance - one-to-one mapping"""
     if len(existing_inmarket_portfolios) == 0:
         print("No existing IN MARKET portfolios found for tagging")
         return []
     
     inmarket_tags = []
+    used_existing_portfolios = set()  # Track which existing portfolios are already used
     
     print(f"Tagging {len(new_inmarket_portfolios)} new IN MARKET portfolios...")
     
-    for _, new_portfolio in new_inmarket_portfolios.iterrows():
+    # Create list of (new_portfolio, distance, existing_portfolio) for all combinations
+    all_combinations = []
+    
+    for new_idx, new_portfolio in new_inmarket_portfolios.iterrows():
         new_lat = new_portfolio['CENTROID_LAT']
         new_lon = new_portfolio['CENTROID_LON']
         new_au = new_portfolio['ASSIGNED_AU']
         
-        # Calculate distances to all existing IN MARKET portfolios
-        distances = []
-        for _, existing_portfolio in existing_inmarket_portfolios.iterrows():
+        for existing_idx, existing_portfolio in existing_inmarket_portfolios.iterrows():
             existing_lat = existing_portfolio['BRANCH_LAT_NUM']
             existing_lon = existing_portfolio['BRANCH_LON_NUM']
             
@@ -100,7 +102,10 @@ def tag_inmarket_portfolios_by_distance(new_inmarket_portfolios, existing_inmark
                 new_lat, new_lon, existing_lat, existing_lon
             )
             
-            distances.append({
+            all_combinations.append({
+                'new_au': new_au,
+                'new_idx': new_idx,
+                'new_customer_count': new_portfolio['CUSTOMER_COUNT'],
                 'existing_portfolio': existing_portfolio['PORT_CODE'],
                 'existing_employee': existing_portfolio['EMPLOYEE_NAME'],
                 'existing_manager': existing_portfolio['MANAGER_NAME'],
@@ -108,40 +113,78 @@ def tag_inmarket_portfolios_by_distance(new_inmarket_portfolios, existing_inmark
                 'existing_au': existing_portfolio['AU'],
                 'distance': float(distance)
             })
+    
+    # Sort all combinations by distance (closest first)
+    all_combinations_sorted = sorted(all_combinations, key=lambda x: x['distance'])
+    
+    # Assign one-to-one: each new portfolio gets assigned to closest available existing portfolio
+    used_new_portfolios = set()
+    
+    for combo in all_combinations_sorted:
+        new_au = combo['new_au']
+        existing_portfolio = combo['existing_portfolio']
         
-        # Find closest existing portfolio
-        if distances:
-            # Sort distances and get the closest one
-            distances_sorted = sorted(distances, key=lambda x: x['distance'])
-            closest = distances_sorted[0]
-            
+        # Skip if this new portfolio or existing portfolio is already used
+        if new_au in used_new_portfolios or existing_portfolio in used_existing_portfolios:
+            continue
+        
+        # Make the assignment
+        inmarket_tags.append({
+            'NEW_AU': new_au,
+            'NEW_TYPE': 'IN MARKET',
+            'NEW_CUSTOMER_COUNT': combo['new_customer_count'],
+            'TAGGED_TO_PORTFOLIO': existing_portfolio,
+            'TAGGED_TO_EMPLOYEE': combo['existing_employee'],
+            'TAGGED_TO_MANAGER': combo['existing_manager'],
+            'TAGGED_TO_DIRECTOR': combo['existing_director'],
+            'TAGGED_TO_AU': combo['existing_au'],
+            'TAGGING_CRITERIA': 'CLOSEST_DISTANCE',
+            'DISTANCE_MILES': combo['distance']
+        })
+        
+        # Mark both as used
+        used_new_portfolios.add(new_au)
+        used_existing_portfolios.add(existing_portfolio)
+        
+        # Stop if all new portfolios are assigned
+        if len(used_new_portfolios) == len(new_inmarket_portfolios):
+            break
+    
+    # Handle any unassigned new portfolios (if there are more new than existing)
+    for new_idx, new_portfolio in new_inmarket_portfolios.iterrows():
+        new_au = new_portfolio['ASSIGNED_AU']
+        if new_au not in used_new_portfolios:
             inmarket_tags.append({
                 'NEW_AU': new_au,
                 'NEW_TYPE': 'IN MARKET',
                 'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                'TAGGED_TO_PORTFOLIO': closest['existing_portfolio'],
-                'TAGGED_TO_EMPLOYEE': closest['existing_employee'],
-                'TAGGED_TO_MANAGER': closest['existing_manager'],
-                'TAGGED_TO_DIRECTOR': closest['existing_director'],
-                'TAGGED_TO_AU': closest['existing_au'],
-                'TAGGING_CRITERIA': 'CLOSEST_DISTANCE',
-                'DISTANCE_MILES': round(closest['distance'], 2)
+                'TAGGED_TO_PORTFOLIO': 'UNTAGGED - NO AVAILABLE EXISTING',
+                'TAGGED_TO_EMPLOYEE': None,
+                'TAGGED_TO_MANAGER': None,
+                'TAGGED_TO_DIRECTOR': None,
+                'TAGGED_TO_AU': None,
+                'TAGGING_CRITERIA': 'NO_AVAILABLE_EXISTING',
+                'DISTANCE_MILES': None
             })
     
     return inmarket_tags
 
 def tag_centralized_portfolios_by_overlap(new_centralized_portfolios, customer_au_assignments, 
                                         existing_centralized_portfolios, existing_portfolio_customers):
-    """Tag new CENTRALIZED portfolios to existing ones based on customer overlap"""
+    """Tag new CENTRALIZED portfolios to existing ones based on customer overlap - one-to-one mapping"""
     if len(existing_centralized_portfolios) == 0:
         print("No existing CENTRALIZED portfolios found for tagging")
         return []
     
     centralized_tags = []
+    used_existing_portfolios = set()  # Track which existing portfolios are already used
     
     print(f"Tagging {len(new_centralized_portfolios)} new CENTRALIZED portfolios...")
     
-    for _, new_portfolio in new_centralized_portfolios.iterrows():
+    # Create list of (new_portfolio, overlap, existing_portfolio) for all combinations
+    all_combinations = []
+    
+    for new_idx, new_portfolio in new_centralized_portfolios.iterrows():
         new_au = new_portfolio['ASSIGNED_AU']
         
         # Get customers in this new centralized portfolio
@@ -150,45 +193,68 @@ def tag_centralized_portfolios_by_overlap(new_centralized_portfolios, customer_a
             (customer_au_assignments['TYPE'] == 'CENTRALIZED')
         ]['CG_ECN'].tolist()
         
-        # Calculate overlap with each existing centralized portfolio
-        overlaps = []
-        for _, existing_portfolio in existing_centralized_portfolios.iterrows():
+        for existing_idx, existing_portfolio in existing_centralized_portfolios.iterrows():
             existing_port_code = existing_portfolio['PORT_CODE']
             existing_customers = existing_portfolio_customers.get(existing_port_code, set())
             
             overlap_count = calculate_customer_overlap(new_customers, existing_customers)
             
-            if overlap_count > 0:  # Only consider portfolios with some overlap
-                overlaps.append({
-                    'existing_portfolio': existing_port_code,
-                    'existing_employee': existing_portfolio['EMPLOYEE_NAME'],
-                    'existing_manager': existing_portfolio['MANAGER_NAME'],
-                    'existing_director': existing_portfolio['DIRECTOR_NAME'],
-                    'overlap_count': overlap_count,
-                    'existing_customer_count': len(existing_customers)
-                })
+            all_combinations.append({
+                'new_au': new_au,
+                'new_idx': new_idx,
+                'new_customer_count': new_portfolio['CUSTOMER_COUNT'],
+                'existing_portfolio': existing_port_code,
+                'existing_employee': existing_portfolio['EMPLOYEE_NAME'],
+                'existing_manager': existing_portfolio['MANAGER_NAME'],
+                'existing_director': existing_portfolio['DIRECTOR_NAME'],
+                'overlap_count': overlap_count,
+                'existing_customer_count': len(existing_customers)
+            })
+    
+    # Sort all combinations by overlap count (highest first), then by existing portfolio size (largest first)
+    all_combinations_sorted = sorted(all_combinations, 
+                                   key=lambda x: (x['overlap_count'], x['existing_customer_count']), 
+                                   reverse=True)
+    
+    # Assign one-to-one: each new portfolio gets assigned to best available existing portfolio
+    used_new_portfolios = set()
+    
+    for combo in all_combinations_sorted:
+        new_au = combo['new_au']
+        existing_portfolio = combo['existing_portfolio']
         
-        # Find portfolio with highest overlap
-        if overlaps:
-            # Sort overlaps and get the one with highest overlap count
-            overlaps_sorted = sorted(overlaps, key=lambda x: x['overlap_count'], reverse=True)
-            best_match = overlaps_sorted[0]
-            
+        # Skip if this new portfolio or existing portfolio is already used
+        if new_au in used_new_portfolios or existing_portfolio in used_existing_portfolios:
+            continue
+        
+        # Only assign if there's some overlap
+        if combo['overlap_count'] > 0:
             centralized_tags.append({
                 'NEW_AU': new_au,
                 'NEW_TYPE': 'CENTRALIZED',
-                'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                'TAGGED_TO_PORTFOLIO': best_match['existing_portfolio'],
-                'TAGGED_TO_EMPLOYEE': best_match['existing_employee'],
-                'TAGGED_TO_MANAGER': best_match['existing_manager'],
-                'TAGGED_TO_DIRECTOR': best_match['existing_director'],
+                'NEW_CUSTOMER_COUNT': combo['new_customer_count'],
+                'TAGGED_TO_PORTFOLIO': existing_portfolio,
+                'TAGGED_TO_EMPLOYEE': combo['existing_employee'],
+                'TAGGED_TO_MANAGER': combo['existing_manager'],
+                'TAGGED_TO_DIRECTOR': combo['existing_director'],
                 'TAGGED_TO_AU': 'N/A (CENTRALIZED)',
                 'TAGGING_CRITERIA': 'MAX_CUSTOMER_OVERLAP',
-                'CUSTOMER_OVERLAP_COUNT': best_match['overlap_count'],
-                'EXISTING_PORTFOLIO_SIZE': best_match['existing_customer_count']
+                'CUSTOMER_OVERLAP_COUNT': combo['overlap_count'],
+                'EXISTING_PORTFOLIO_SIZE': combo['existing_customer_count']
             })
-        else:
-            # No overlap found - mark as untagged
+            
+            # Mark both as used
+            used_new_portfolios.add(new_au)
+            used_existing_portfolios.add(existing_portfolio)
+        
+        # Stop if all new portfolios are assigned
+        if len(used_new_portfolios) == len(new_centralized_portfolios):
+            break
+    
+    # Handle any unassigned new portfolios
+    for new_idx, new_portfolio in new_centralized_portfolios.iterrows():
+        new_au = new_portfolio['ASSIGNED_AU']
+        if new_au not in used_new_portfolios:
             centralized_tags.append({
                 'NEW_AU': new_au,
                 'NEW_TYPE': 'CENTRALIZED',
