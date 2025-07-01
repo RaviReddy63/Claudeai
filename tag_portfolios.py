@@ -120,6 +120,28 @@ def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch
     
     return existing_inmarket, existing_centralized, portfolio_customers
 
+def get_all_existing_portfolios(active_portfolio_df, branch_df):
+    """Get ALL existing portfolios (not just MOJGAN MADADI) for distance-based manager/director assignment"""
+    # Clean the dataframes first
+    active_portfolio_clean = active_portfolio_df.copy()
+    active_portfolio_clean['DIRECTOR_NAME'] = active_portfolio_clean['DIRECTOR_NAME'].fillna('')
+    active_portfolio_clean['MANAGER_NAME'] = active_portfolio_clean['MANAGER_NAME'].fillna('')
+    active_portfolio_clean['ROLE_TYPE'] = active_portfolio_clean['ROLE_TYPE'].fillna('')
+    active_portfolio_clean['ISACTIVE'] = pd.to_numeric(active_portfolio_clean['ISACTIVE'], errors='coerce').fillna(0)
+    
+    # Get all active portfolios
+    all_active_portfolios = active_portfolio_clean[
+        active_portfolio_clean['ISACTIVE'] == 1
+    ].copy()
+    
+    if len(all_active_portfolios) > 0:
+        all_active_portfolios = all_active_portfolios.merge(
+            branch_df[['BRANCH_AU', 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM']], 
+            left_on='AU', right_on='BRANCH_AU', how='left'
+        )
+    
+    return all_active_portfolios
+
 def calculate_customer_overlap(new_customers, existing_customers):
     """Calculate customer overlap between portfolios"""
     if not existing_customers or not new_customers:
@@ -206,6 +228,34 @@ def get_unique_new_portfolios(customer_au_assignments):
     
     return portfolio_summary
 
+def find_nearest_portfolio_for_manager_director(new_au, branch_df, all_portfolios_df):
+    """Find the nearest existing portfolio to assign manager/director for untagged portfolios"""
+    # Get coordinates for the new AU
+    new_au_info = branch_df[branch_df['BRANCH_AU'] == new_au]
+    if len(new_au_info) == 0:
+        return None, None, float('inf')
+    
+    new_lat = safe_get_value(new_au_info.iloc[0], 'BRANCH_LAT_NUM', 0)
+    new_lon = safe_get_value(new_au_info.iloc[0], 'BRANCH_LON_NUM', 0)
+    
+    min_distance = float('inf')
+    nearest_manager = None
+    nearest_director = None
+    
+    # Check distances to all existing portfolios
+    for _, existing_portfolio in all_portfolios_df.iterrows():
+        existing_lat = safe_get_value(existing_portfolio, 'BRANCH_LAT_NUM', 0)
+        existing_lon = safe_get_value(existing_portfolio, 'BRANCH_LON_NUM', 0)
+        
+        distance = haversine_distance_vectorized(new_lat, new_lon, existing_lat, existing_lon)
+        
+        if distance < min_distance and not np.isinf(distance):
+            min_distance = distance
+            nearest_manager = safe_get_value(existing_portfolio, 'MANAGER_NAME', '')
+            nearest_director = safe_get_value(existing_portfolio, 'DIRECTOR_NAME', '')
+    
+    return nearest_manager, nearest_director, min_distance
+
 def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df):
     """Main function to tag new portfolios to existing MOJGAN MADADI portfolios using AU locations"""
     
@@ -223,7 +273,11 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         active_portfolio_df, client_groups_df, branch_df
     )
     
+    # Get ALL existing portfolios for distance-based manager/director assignment
+    all_existing_portfolios = get_all_existing_portfolios(active_portfolio_df, branch_df)
+    
     print(f"Existing MOJGAN MADADI portfolios: IN MARKET: {len(existing_inmarket)}, CENTRALIZED: {len(existing_centralized)}")
+    print(f"Total existing portfolios for distance calculation: {len(all_existing_portfolios)}")
     
     all_tags = []
     
@@ -413,7 +467,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     else:
         used_new_untagged = set()
     
-    # PHASE 3: Handle completely untagged portfolios
+    # PHASE 3: Handle completely untagged portfolios - assign nearest manager/director only
     for untagged_portfolio in all_untagged_portfolios:
         new_au = untagged_portfolio['au']
         if new_au not in used_new_untagged:
@@ -425,17 +479,22 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             
             new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
             
+            # Find nearest portfolio for manager/director assignment
+            nearest_manager, nearest_director, nearest_distance = find_nearest_portfolio_for_manager_director(
+                new_au, branch_df, all_existing_portfolios
+            )
+            
             all_tags.append({
                 'NEW_AU': new_au,
                 'NEW_TYPE': new_type,
                 'NEW_CUSTOMER_COUNT': untagged_portfolio['customer_count'],
-                'TAGGED_TO_PORTFOLIO': '',
-                'TAGGED_TO_EMPLOYEE': '',
-                'TAGGED_TO_MANAGER': '',
-                'TAGGED_TO_DIRECTOR': '',
+                'TAGGED_TO_PORTFOLIO': '',  # No portfolio assignment
+                'TAGGED_TO_EMPLOYEE': '',  # No employee assignment
+                'TAGGED_TO_MANAGER': nearest_manager if nearest_manager else '',
+                'TAGGED_TO_DIRECTOR': nearest_director if nearest_director else '',
                 'TAGGED_TO_AU': '',
-                'TAGGING_CRITERIA': 'UNTAGGED',
-                'DISTANCE_MILES': None,
+                'TAGGING_CRITERIA': 'NEAREST_MANAGER_DIRECTOR_ONLY',
+                'DISTANCE_MILES': nearest_distance if not np.isinf(nearest_distance) else None,
                 'CUSTOMER_OVERLAP_COUNT': 0,
                 'EXISTING_PORTFOLIO_SIZE': 0,
                 'EXISTING_AVG_DEPOSIT_BAL': None,
@@ -457,18 +516,19 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     print(f"New customers not in any active portfolio: {new_customers_count}")
     if len(tagging_results) > 0:
         tagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] != '']
-        untagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] == '']
+        manager_director_only = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'NEAREST_MANAGER_DIRECTOR_ONLY']
         print(f"Tagged to MOJGAN MADADI portfolios: {len(tagged_portfolios)}")
-        print(f"Untagged (left blank): {len(untagged_portfolios)}")
+        print(f"Assigned nearest manager/director only: {len(manager_director_only)}")
         
         if len(tagged_portfolios) > 0:
             print(f"Total customer overlap: {tagged_portfolios['CUSTOMER_OVERLAP_COUNT'].sum()}")
             
         # Break down by tagging criteria
-        distance_tagged = tagged_portfolios[tagged_portfolios['TAGGING_CRITERIA'] == 'CLOSEST_AU_DISTANCE']
-        overlap_tagged = tagged_portfolios[tagged_portfolios['TAGGING_CRITERIA'] == 'MAX_CUSTOMER_OVERLAP']
+        distance_tagged = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'CLOSEST_AU_DISTANCE']
+        overlap_tagged = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'MAX_CUSTOMER_OVERLAP']
         print(f"Tagged by AU distance (IN MARKET): {len(distance_tagged)}")
-        print(f"Tagged by customer overlap (CENTRALIZED to untagged): {len(overlap_tagged)}")
+        print(f"Tagged by customer overlap (CENTRALIZED): {len(overlap_tagged)}")
+        print(f"Assigned nearest manager/director only: {len(manager_director_only)}")
     
     return tagging_results
 
