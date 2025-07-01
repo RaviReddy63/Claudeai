@@ -71,7 +71,7 @@ def find_candidates_spatial(customer_coords, seed_coord, max_radius, ball_tree=N
     
     return np.array([]), np.array([])
 
-def constrained_clustering_optimized(customer_df, min_size=200, max_size=240, max_radius=20):
+def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, max_radius=20):
     """Optimized clustering with vectorized operations and spatial indexing"""
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
@@ -305,7 +305,7 @@ def assign_clusters_to_branches_vectorized(cluster_info, branch_df):
     
     return pd.DataFrame(cluster_assignments)
 
-def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=240):
+def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=225):
     """
     Fast greedy assignment instead of Hungarian algorithm
     Assigns customers to nearest available branch with capacity
@@ -400,6 +400,113 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     
     return customer_assignments, unassigned_customers
 
+def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, customer_assignments, branch_df, proximity_threshold=20, max_portfolio_size=250):
+    """
+    Check if unassigned customers are within proximity of identified AUs
+    Add them to existing portfolios up to max_portfolio_size
+    """
+    print(f"\nChecking proximity for {len(unassigned_customers_df)} unassigned customers...")
+    print(f"Proximity threshold: {proximity_threshold} miles, Max portfolio size: {max_portfolio_size}")
+    
+    if len(unassigned_customers_df) == 0 or not customer_assignments:
+        return [], list(unassigned_customers_df.index), customer_assignments
+    
+    # Get identified AUs and their coordinates
+    identified_aus = list(customer_assignments.keys())
+    identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_aus)].copy()
+    
+    print(f"Checking proximity to {len(identified_aus)} identified AUs: {identified_aus}")
+    
+    # Pre-compute current portfolio sizes
+    current_portfolio_sizes = {}
+    for branch_au, customers in customer_assignments.items():
+        current_portfolio_sizes[branch_au] = len(customers)
+    
+    print("Current portfolio sizes:")
+    for branch_au, size in current_portfolio_sizes.items():
+        print(f"  - {branch_au}: {size} customers")
+    
+    # Calculate distances from unassigned customers to all identified AUs
+    unassigned_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
+    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
+    
+    distance_matrix = compute_distance_matrix(unassigned_coords, branch_coords)
+    
+    proximity_results = []
+    remaining_unassigned = []
+    updated_customer_assignments = customer_assignments.copy()
+    
+    # Process each unassigned customer
+    for i, (customer_idx, customer_data) in enumerate(unassigned_customers_df.iterrows()):
+        assigned = False
+        
+        # Find all AUs within proximity threshold
+        customer_distances = distance_matrix[i, :]
+        within_proximity = customer_distances <= proximity_threshold
+        
+        if np.any(within_proximity):
+            # Get AUs within proximity and their distances
+            proximity_aus = []
+            for j, is_within in enumerate(within_proximity):
+                if is_within:
+                    branch_au = identified_branch_coords.iloc[j]['BRANCH_AU']
+                    distance = customer_distances[j]
+                    current_size = current_portfolio_sizes[branch_au]
+                    
+                    if current_size < max_portfolio_size:
+                        proximity_aus.append((branch_au, distance, current_size))
+            
+            # Sort by distance and assign to nearest AU with capacity
+            if proximity_aus:
+                proximity_aus.sort(key=lambda x: x[1])  # Sort by distance
+                
+                for branch_au, distance, current_size in proximity_aus:
+                    if current_portfolio_sizes[branch_au] < max_portfolio_size:
+                        # Add customer to this AU
+                        updated_customer_assignments[branch_au].append({
+                            'customer_idx': customer_idx,
+                            'distance': distance
+                        })
+                        
+                        current_portfolio_sizes[branch_au] += 1
+                        
+                        try:
+                            distance_rounded = round(float(distance), 2)
+                        except (ValueError, TypeError):
+                            distance_rounded = 0
+                        
+                        proximity_results.append({
+                            'ECN': customer_data['ECN'],
+                            'BILLINGCITY': customer_data['BILLINGCITY'],
+                            'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                            'LAT_NUM': customer_data['LAT_NUM'],
+                            'LON_NUM': customer_data['LON_NUM'],
+                            'ASSIGNED_AU': branch_au,
+                            'DISTANCE_TO_AU': distance_rounded,
+                            'TYPE': 'PROXIMITY'
+                        })
+                        
+                        assigned = True
+                        break
+        
+        if not assigned:
+            remaining_unassigned.append(customer_idx)
+    
+    print(f"\nProximity assignment results:")
+    print(f"  - Customers assigned via proximity: {len(proximity_results)}")
+    print(f"  - Customers still unassigned: {len(remaining_unassigned)}")
+    
+    # Sort customers within each branch by distance
+    for branch_au in updated_customer_assignments:
+        updated_customer_assignments[branch_au].sort(key=lambda x: x['distance'])
+    
+    # Print updated portfolio sizes
+    print("\nUpdated portfolio sizes after proximity assignment:")
+    for branch_au, customers in updated_customer_assignments.items():
+        print(f"  - {branch_au}: {len(customers)} customers")
+    
+    return proximity_results, remaining_unassigned, updated_customer_assignments
+
 def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df, 
                                          min_size=200, max_size=240):
     """
@@ -492,14 +599,14 @@ def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df,
     
     return centralized_results, final_unassigned
 
-def create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_df):
+def create_customer_au_dataframe_with_proximity_and_centralized_clusters(customer_df, branch_df):
     """
-    Modified main function that creates proper centralized clusters
+    Modified main function that includes proximity check before centralized clustering
     """
     
     print(f"Starting with {len(customer_df)} customers and {len(branch_df)} branches")
     
-    # Step 1: Create INMARKET clusters (with radius constraint)
+    # Step 1: Create INMARKET clusters (with radius constraint, max_size=225)
     print("Step 1: Creating INMARKET clusters...")
     clustered_customers, cluster_info = constrained_clustering_optimized(customer_df)
     
@@ -549,27 +656,40 @@ def create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_d
     unassigned_customer_indices.extend(never_assigned)
     unassigned_customer_indices = list(set(unassigned_customer_indices))
     
-    print(f"Total unassigned customers for centralized processing: {len(unassigned_customer_indices)}")
+    print(f"Total unassigned customers after INMARKET: {len(unassigned_customer_indices)}")
     
-    # Step 4: Create CENTRALIZED clusters (no radius constraint) and assign
+    # Step 4: NEW - Check proximity of unassigned customers to identified AUs
+    proximity_results = []
+    final_unassigned_after_proximity = unassigned_customer_indices.copy()
+    
+    if unassigned_customer_indices and customer_assignments:
+        unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
+        
+        proximity_results, final_unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
+            unassigned_customers_df, customer_assignments, branch_df, 
+            proximity_threshold=20, max_portfolio_size=250
+        )
+    
+    # Step 5: Create CENTRALIZED clusters (no radius constraint) for remaining unassigned
     centralized_results = []
     final_unassigned = []
     
-    if unassigned_customer_indices:
-        unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
+    if final_unassigned_after_proximity:
+        remaining_unassigned_df = customer_df.loc[final_unassigned_after_proximity]
         
         centralized_results, final_unassigned = create_centralized_clusters_and_assign(
-            unassigned_customers_df, branch_df, min_size=200, max_size=240
+            remaining_unassigned_df, branch_df, min_size=200, max_size=240
         )
     
     # Combine results
-    all_results = inmarket_results + centralized_results
+    all_results = inmarket_results + proximity_results + centralized_results
     result_df = pd.DataFrame(all_results)
     
     # Print summary
     print(f"\n=== FINAL COMPREHENSIVE SUMMARY ===")
     print(f"Total customers processed: {len(customer_df)}")
     print(f"INMARKET customers assigned: {len(inmarket_results)}")
+    print(f"PROXIMITY customers assigned: {len(proximity_results)}")
     print(f"CENTRALIZED customers assigned: {len(centralized_results)}")
     print(f"Final unassigned customers: {len(final_unassigned)}")
     print(f"Total assigned customers: {len(result_df)}")
@@ -612,6 +732,6 @@ def create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_d
     return result_df
 
 # Usage:
-# customer_au_assignments = create_customer_au_dataframe_with_centralized_clusters(customer_df, branch_df)
+# customer_au_assignments = create_customer_au_dataframe_with_proximity_and_centralized_clusters(customer_df, branch_df)
 # print(customer_au_assignments.head())
-# customer_au_assignments.to_csv('customer_au_assignments_with_centralized_clusters.csv', index=False)
+# customer_au_assignments.to_csv('customer_au_assignments_with_proximity_and_centralized_clusters.csv', index=False)
