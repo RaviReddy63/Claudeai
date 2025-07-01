@@ -21,9 +21,21 @@ def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
     if len(portfolio_data) == 0:
         return None, None, None
     
-    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    # Convert to numeric and handle errors
+    avg_deposit = None
+    if 'DEPOSIT_BAL' in portfolio_data.columns:
+        deposit_numeric = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
+        avg_deposit = deposit_numeric.mean() if not deposit_numeric.isna().all() else None
+    
+    avg_gross_sales = None
+    if 'CG_GROSS_SALES' in portfolio_data.columns:
+        sales_numeric = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
+        avg_gross_sales = sales_numeric.mean() if not sales_numeric.isna().all() else None
+    
+    avg_bank_revenue = None
+    if 'BANK_REVENUE' in portfolio_data.columns:
+        revenue_numeric = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
+        avg_bank_revenue = revenue_numeric.mean() if not revenue_numeric.isna().all() else None
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue
 
@@ -151,9 +163,22 @@ def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_gro
     if len(portfolio_data) == 0:
         return None, None, None, 0
     
-    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    # Convert to numeric and handle errors
+    avg_deposit = None
+    if 'DEPOSIT_BAL' in portfolio_data.columns:
+        deposit_numeric = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
+        avg_deposit = deposit_numeric.mean() if not deposit_numeric.isna().all() else None
+    
+    avg_gross_sales = None
+    if 'CG_GROSS_SALES' in portfolio_data.columns:
+        sales_numeric = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
+        avg_gross_sales = sales_numeric.mean() if not sales_numeric.isna().all() else None
+    
+    avg_bank_revenue = None
+    if 'BANK_REVENUE' in portfolio_data.columns:
+        revenue_numeric = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
+        avg_bank_revenue = revenue_numeric.mean() if not revenue_numeric.isna().all() else None
+    
     portfolio_size = len(portfolio_data)
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue, portfolio_size
