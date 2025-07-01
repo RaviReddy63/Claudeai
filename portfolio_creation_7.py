@@ -1,4 +1,162 @@
-import pandas as pd
+def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neighbors=3):
+    """
+    Repeatedly optimize INMARKET portfolios until no more beneficial reassignments can be made
+    """
+    print(f"\nOptimizing INMARKET portfolios until convergence...")
+    
+    optimized_result = result_df.copy()
+    iteration = 0
+    
+    while True:
+        iteration += 1
+        print(f"\n--- Optimization Iteration {iteration} ---")
+        
+        inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        if len(inmarket_customers) == 0:
+            break
+        
+        # Group customers by assigned AU
+        portfolio_groups = inmarket_customers.groupby('ASSIGNED_AU')
+        outlier_customers = []
+        
+        # Step 1: Identify outlier customers (3x median distance)
+        for au, group in portfolio_groups:
+            if len(group) <= 1:
+                continue
+                
+            distances = group['DISTANCE_TO_AU'].values
+            median_distance = np.median(distances)
+            threshold = 3 * median_distance
+            
+            outliers = group[group['DISTANCE_TO_AU'] > threshold]
+            if len(outliers) > 0:
+                for idx, customer in outliers.iterrows():
+                    outlier_customers.append({
+                        'customer_idx': idx,
+                        'current_au': au,
+                        'current_distance': customer['DISTANCE_TO_AU'],
+                        'customer_data': customer
+                    })
+        
+        if not outlier_customers:
+            print("No outlier customers found - optimization converged")
+            break
+        
+        print(f"Found {len(outlier_customers)} outlier customers to evaluate")
+        
+        # Get all INMARKET AUs and their coordinates
+        inmarket_aus = inmarket_customers['ASSIGNED_AU'].unique()
+        au_coords = []
+        au_list = []
+        
+        for au in inmarket_aus:
+            branch_coord = branch_df[branch_df['BRANCH_AU'] == au]
+            if len(branch_coord) > 0:
+                au_coords.append([branch_coord.iloc[0]['BRANCH_LAT_NUM'], branch_coord.iloc[0]['BRANCH_LON_NUM']])
+                au_list.append(au)
+        
+        au_coords = np.array(au_coords)
+        
+        # Track current portfolio sizes
+        portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
+        
+        iteration_improvements = 0
+        
+        # Step 2: Process each outlier customer
+        for outlier in outlier_customers:
+            customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]])
+            
+            # Calculate distances to all AUs
+            distances_to_aus = compute_distance_matrix(customer_coord, au_coords)[0]
+            
+            # Find k nearest AUs
+            nearest_indices = np.argsort(distances_to_aus)[:k_neighbors]
+            
+            best_reassignment = None
+            best_improvement = 0
+            
+            for idx in nearest_indices:
+                target_au = au_list[idx]
+                target_distance = distances_to_aus[idx]
+                
+                if target_au == outlier['current_au']:
+                    continue
+                
+                current_improvement = outlier['current_distance'] - target_distance
+                
+                if current_improvement <= 0:
+                    continue
+                
+                # Check if target portfolio has capacity
+                if portfolio_sizes.get(target_au, 0) < 250:
+                    if current_improvement > best_improvement:
+                        best_reassignment = {
+                            'type': 'direct',
+                            'target_au': target_au,
+                            'target_distance': target_distance,
+                            'improvement': current_improvement
+                        }
+                        best_improvement = current_improvement
+                
+                # Check for trade opportunity
+                elif portfolio_sizes.get(target_au, 0) == 250:
+                    target_portfolio = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == target_au]
+                    target_farthest_idx = target_portfolio['DISTANCE_TO_AU'].idxmax()
+                    target_farthest = target_portfolio.loc[target_farthest_idx]
+                    
+                    # Calculate trade benefit
+                    current_au_coord = branch_df[branch_df['BRANCH_AU'] == outlier['current_au']]
+                    if len(current_au_coord) > 0:
+                        trade_distance = haversine_distance_vectorized(
+                            target_farthest['LAT_NUM'], target_farthest['LON_NUM'],
+                            current_au_coord.iloc[0]['BRANCH_LAT_NUM'], current_au_coord.iloc[0]['BRANCH_LON_NUM']
+                        )
+                        
+                        total_trade_improvement = (outlier['current_distance'] - target_distance) + (target_farthest['DISTANCE_TO_AU'] - trade_distance)
+                        
+                        if total_trade_improvement > best_improvement:
+                            best_reassignment = {
+                                'type': 'trade',
+                                'target_au': target_au,
+                                'target_distance': target_distance,
+                                'trade_customer_idx': target_farthest_idx,
+                                'trade_distance': trade_distance,
+                                'improvement': total_trade_improvement
+                            }
+                            best_improvement = total_trade_improvement
+            
+            # Execute best reassignment
+            if best_reassignment and best_improvement > 0:
+                if best_reassignment['type'] == 'direct':
+                    # Direct reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    portfolio_sizes[outlier['current_au']] -= 1
+                    portfolio_sizes[best_reassignment['target_au']] = portfolio_sizes.get(best_reassignment['target_au'], 0) + 1
+                    
+                elif best_reassignment['type'] == 'trade':
+                    # Trade reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'ASSIGNED_AU'] = outlier['current_au']
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['trade_distance']
+                
+                iteration_improvements += 1
+                
+                # Update inmarket_customers for subsequent iterations within this loop
+                inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        
+        print(f"Iteration {iteration}: {iteration_improvements} customers reassigned")
+        
+        # If no improvements were made in this iteration, we've converged
+        if iteration_improvements == 0:
+            print("No improvements found - optimization converged")
+            break
+    
+    print(f"Optimization complete after {iteration} iterations")
+    return optimized_resultimport pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.neighbors import BallTree
@@ -916,9 +1074,9 @@ def create_customer_au_dataframe_with_proximity_and_centralized_clusters(custome
     all_results = inmarket_results + proximity_results + centralized_results
     result_df = pd.DataFrame(all_results)
     
-    # Step 6: Optimize INMARKET portfolios
+    # Step 6: Optimize INMARKET portfolios until convergence
     if len(result_df) > 0:
-        result_df = optimize_inmarket_portfolios_with_knn(result_df, branch_df)
+        result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
     
     # Print summary
     print(f"\n=== FINAL COMPREHENSIVE SUMMARY ===")
