@@ -470,11 +470,6 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
                         
                         current_portfolio_sizes[branch_au] += 1
                         
-                        try:
-                            distance_rounded = round(float(distance), 2)
-                        except (ValueError, TypeError):
-                            distance_rounded = 0
-                        
                         proximity_results.append({
                             'ECN': customer_data['ECN'],
                             'BILLINGCITY': customer_data['BILLINGCITY'],
@@ -482,7 +477,7 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
                             'LAT_NUM': customer_data['LAT_NUM'],
                             'LON_NUM': customer_data['LON_NUM'],
                             'ASSIGNED_AU': branch_au,
-                            'DISTANCE_TO_AU': distance_rounded,
+                            'DISTANCE_TO_AU': distance,
                             'TYPE': 'PROXIMITY'
                         })
                         
@@ -565,11 +560,6 @@ def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df,
                 # Get original customer data
                 original_customer = unassigned_customers_df.loc[idx]
                 
-                try:
-                    distance_rounded = round(float(distance), 2)
-                except (ValueError, TypeError):
-                    distance_rounded = 0
-                
                 centralized_results.append({
                     'customer_idx': idx,
                     'ECN': original_customer['ECN'],
@@ -578,7 +568,7 @@ def create_centralized_clusters_and_assign(unassigned_customers_df, branch_df,
                     'LAT_NUM': original_customer['LAT_NUM'],
                     'LON_NUM': original_customer['LON_NUM'],
                     'ASSIGNED_AU': assigned_branch,
-                    'DISTANCE_TO_AU': distance_rounded,
+                    'DISTANCE_TO_AU': distance,
                     'TYPE': 'CENTRALIZED',
                     'CLUSTER_ID': cluster_id
                 })
@@ -633,10 +623,6 @@ def create_customer_au_dataframe_with_proximity_and_centralized_clusters(custome
                 customer_data = customer_df.loc[customer_idx]
                 
                 distance_value = customer.get('distance', 0)
-                try:
-                    distance_rounded = round(float(distance_value), 2)
-                except (ValueError, TypeError):
-                    distance_rounded = 0
                 
                 inmarket_results.append({
                     'ECN': customer_data['ECN'],
@@ -645,7 +631,7 @@ def create_customer_au_dataframe_with_proximity_and_centralized_clusters(custome
                     'LAT_NUM': customer_data['LAT_NUM'],
                     'LON_NUM': customer_data['LON_NUM'],
                     'ASSIGNED_AU': branch_au,
-                    'DISTANCE_TO_AU': distance_rounded,
+                    'DISTANCE_TO_AU': distance_value,
                     'TYPE': 'INMARKET'
                 })
         
