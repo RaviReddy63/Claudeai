@@ -1,23 +1,4 @@
-def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
-    """Get average financial metrics for a portfolio using customer list"""
-    if not portfolio_customers:
-        return None, None, None
-    
-    if isinstance(portfolio_customers, set):
-        customer_list = list(portfolio_customers)
-    else:
-        customer_list = portfolio_customers
-    
-    portfolio_data = client_groups_df[client_groups_df['CG_ECN'].isin(customer_list)]
-    
-    if len(portfolio_data) == 0:
-        return None, None, None
-    
-    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
-    
-    return avg_deposit, avg_gross_sales, avg_bank_revenueimport pandas as pd
+import pandas as pd
 import numpy as np
 
 def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
@@ -96,6 +77,27 @@ def calculate_customer_overlap(new_customers, existing_customers):
     overlap = len(new_customer_set.intersection(existing_customers))
     return overlap
 
+def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
+    """Get average financial metrics for a portfolio using customer list"""
+    if not portfolio_customers:
+        return None, None, None
+    
+    if isinstance(portfolio_customers, set):
+        customer_list = list(portfolio_customers)
+    else:
+        customer_list = portfolio_customers
+    
+    portfolio_data = client_groups_df[client_groups_df['CG_ECN'].isin(customer_list)]
+    
+    if len(portfolio_data) == 0:
+        return None, None, None
+    
+    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    
+    return avg_deposit, avg_gross_sales, avg_bank_revenue
+
 def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_groups_df):
     """Get average financial metrics for a portfolio using portfolio code from CLIENT_GROUPS_DF_NEW"""
     portfolio_data = client_groups_df[
@@ -143,20 +145,26 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     
     all_tags = []
     
-    # Tag IN MARKET portfolios by distance
+    # Tag IN MARKET portfolios by AU-to-AU distance
     if len(new_inmarket) > 0:
+        # Get branch coordinates for new portfolios' AUs
+        new_inmarket_with_coords = new_inmarket.merge(
+            branch_df[['BRANCH_AU', 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM']], 
+            left_on='ASSIGNED_AU', right_on='BRANCH_AU', how='left'
+        )
+        
         used_existing_inmarket = set()
         
         # Create all distance combinations
         inmarket_combinations = []
-        for _, new_portfolio in new_inmarket.iterrows():
-            new_lat = new_portfolio['CENTROID_LAT']
-            new_lon = new_portfolio['CENTROID_LON']
+        for _, new_portfolio in new_inmarket_with_coords.iterrows():
+            new_lat = new_portfolio['BRANCH_LAT_NUM']    # FROM: New AU branch location
+            new_lon = new_portfolio['BRANCH_LON_NUM']    # FROM: New AU branch location
             new_au = new_portfolio['ASSIGNED_AU']
             
             for _, existing_portfolio in existing_inmarket.iterrows():
-                existing_lat = existing_portfolio['BRANCH_LAT_NUM']
-                existing_lon = existing_portfolio['BRANCH_LON_NUM']
+                existing_lat = existing_portfolio['BRANCH_LAT_NUM']  # TO: Existing AU branch location
+                existing_lon = existing_portfolio['BRANCH_LON_NUM']  # TO: Existing AU branch location
                 distance = haversine_distance_vectorized(new_lat, new_lon, existing_lat, existing_lon)
                 
                 inmarket_combinations.append({
@@ -205,7 +213,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGED_TO_MANAGER': combo['existing_manager'],
                 'TAGGED_TO_DIRECTOR': combo['existing_director'],
                 'TAGGED_TO_AU': combo['existing_au'],
-                'TAGGING_CRITERIA': 'CLOSEST_DISTANCE',
+                'TAGGING_CRITERIA': 'CLOSEST_AU_DISTANCE',
                 'DISTANCE_MILES': combo['distance'],
                 'CUSTOMER_OVERLAP_COUNT': overlap_count,
                 'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
@@ -220,90 +228,93 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             used_new_inmarket.add(new_au)
             used_existing_inmarket.add(existing_portfolio)
         
-        # Handle untagged IN MARKET portfolios - assign to closest manager
-        for _, new_portfolio in new_inmarket.iterrows():
+        # Handle untagged IN MARKET portfolios - assign to closest AU manager
+        untagged_new_inmarket = new_inmarket_with_coords[
+            ~new_inmarket_with_coords['ASSIGNED_AU'].isin(used_new_inmarket)
+        ]
+        
+        for _, new_portfolio in untagged_new_inmarket.iterrows():
             new_au = new_portfolio['ASSIGNED_AU']
-            if new_au not in used_new_inmarket:
-                new_lat = new_portfolio['CENTROID_LAT']
-                new_lon = new_portfolio['CENTROID_LON']
+            new_lat = new_portfolio['BRANCH_LAT_NUM']    # FROM: New AU branch location
+            new_lon = new_portfolio['BRANCH_LON_NUM']    # FROM: New AU branch location
+            
+            # Find closest AU manager from existing portfolios
+            min_distance = float('inf')
+            closest_manager_info = None
+            
+            for _, existing_portfolio in existing_inmarket.iterrows():
+                existing_lat = existing_portfolio['BRANCH_LAT_NUM']  # TO: Existing AU branch location
+                existing_lon = existing_portfolio['BRANCH_LON_NUM']  # TO: Existing AU branch location
+                distance = haversine_distance_vectorized(new_lat, new_lon, existing_lat, existing_lon)
                 
-                # Find closest manager from existing portfolios
-                min_distance = float('inf')
-                closest_manager_info = None
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_manager_info = {
+                        'portfolio': existing_portfolio['PORT_CODE'],
+                        'employee': existing_portfolio['EMPLOYEE_NAME'],
+                        'manager': existing_portfolio['MANAGER_NAME'],
+                        'director': existing_portfolio['DIRECTOR_NAME'],
+                        'au': existing_portfolio['AU'],
+                        'distance': float(distance)
+                    }
+            
+            new_customers = customer_au_assignments[
+                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
+                (customer_au_assignments['TYPE'] == 'INMARKET')
+            ]['CG_ECN'].tolist()
+            
+            new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
+            
+            # If we found a closest manager, get their portfolio info, otherwise leave blank
+            if closest_manager_info:
+                existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(closest_manager_info['portfolio'], client_groups_df)
                 
-                for _, existing_portfolio in existing_inmarket.iterrows():
-                    existing_lat = existing_portfolio['BRANCH_LAT_NUM']
-                    existing_lon = existing_portfolio['BRANCH_LON_NUM']
-                    distance = haversine_distance_vectorized(new_lat, new_lon, existing_lat, existing_lon)
-                    
-                    if distance < min_distance:
-                        min_distance = distance
-                        closest_manager_info = {
-                            'portfolio': existing_portfolio['PORT_CODE'],
-                            'employee': existing_portfolio['EMPLOYEE_NAME'],
-                            'manager': existing_portfolio['MANAGER_NAME'],
-                            'director': existing_portfolio['DIRECTOR_NAME'],
-                            'au': existing_portfolio['AU'],
-                            'distance': float(distance)
-                        }
+                # Calculate overlap with closest manager's portfolio
+                existing_customers = existing_portfolio_customers.get(closest_manager_info['portfolio'], set())
+                overlap_count = calculate_customer_overlap(new_customers, existing_customers)
                 
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'] == 'INMARKET')
-                ]['CG_ECN'].tolist()
-                
-                new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-                
-                # If we found a closest manager, get their portfolio info, otherwise leave blank
-                if closest_manager_info:
-                    existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(closest_manager_info['portfolio'], client_groups_df)
-                    
-                    # Calculate overlap with closest manager's portfolio
-                    existing_customers = existing_portfolio_customers.get(closest_manager_info['portfolio'], set())
-                    overlap_count = calculate_customer_overlap(new_customers, existing_customers)
-                    
-                    all_tags.append({
-                        'NEW_AU': new_au,
-                        'NEW_TYPE': 'IN MARKET',
-                        'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                        'TAGGED_TO_PORTFOLIO': closest_manager_info['portfolio'],
-                        'TAGGED_TO_EMPLOYEE': closest_manager_info['employee'],
-                        'TAGGED_TO_MANAGER': closest_manager_info['manager'],
-                        'TAGGED_TO_DIRECTOR': closest_manager_info['director'],
-                        'TAGGED_TO_AU': closest_manager_info['au'],
-                        'TAGGING_CRITERIA': 'CLOSEST_MANAGER_UNTAGGED',
-                        'DISTANCE_MILES': closest_manager_info['distance'],
-                        'CUSTOMER_OVERLAP_COUNT': overlap_count,
-                        'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
-                        'EXISTING_AVG_DEPOSIT_BAL': existing_avg_deposit,
-                        'EXISTING_AVG_GROSS_SALES': existing_avg_gross_sales,
-                        'EXISTING_AVG_BANK_REVENUE': existing_avg_bank_revenue,
-                        'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                        'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                        'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-                    })
-                else:
-                    # No existing portfolios found
-                    all_tags.append({
-                        'NEW_AU': new_au,
-                        'NEW_TYPE': 'IN MARKET',
-                        'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                        'TAGGED_TO_PORTFOLIO': '',
-                        'TAGGED_TO_EMPLOYEE': '',
-                        'TAGGED_TO_MANAGER': '',
-                        'TAGGED_TO_DIRECTOR': '',
-                        'TAGGED_TO_AU': '',
-                        'TAGGING_CRITERIA': 'UNTAGGED',
-                        'DISTANCE_MILES': None,
-                        'CUSTOMER_OVERLAP_COUNT': 0,
-                        'EXISTING_PORTFOLIO_SIZE': 0,
-                        'EXISTING_AVG_DEPOSIT_BAL': None,
-                        'EXISTING_AVG_GROSS_SALES': None,
-                        'EXISTING_AVG_BANK_REVENUE': None,
-                        'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                        'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                        'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-                    })
+                all_tags.append({
+                    'NEW_AU': new_au,
+                    'NEW_TYPE': 'IN MARKET',
+                    'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
+                    'TAGGED_TO_PORTFOLIO': closest_manager_info['portfolio'],
+                    'TAGGED_TO_EMPLOYEE': closest_manager_info['employee'],
+                    'TAGGED_TO_MANAGER': closest_manager_info['manager'],
+                    'TAGGED_TO_DIRECTOR': closest_manager_info['director'],
+                    'TAGGED_TO_AU': closest_manager_info['au'],
+                    'TAGGING_CRITERIA': 'CLOSEST_AU_MANAGER_UNTAGGED',
+                    'DISTANCE_MILES': closest_manager_info['distance'],
+                    'CUSTOMER_OVERLAP_COUNT': overlap_count,
+                    'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
+                    'EXISTING_AVG_DEPOSIT_BAL': existing_avg_deposit,
+                    'EXISTING_AVG_GROSS_SALES': existing_avg_gross_sales,
+                    'EXISTING_AVG_BANK_REVENUE': existing_avg_bank_revenue,
+                    'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
+                    'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
+                    'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
+                })
+            else:
+                # No existing portfolios found
+                all_tags.append({
+                    'NEW_AU': new_au,
+                    'NEW_TYPE': 'IN MARKET',
+                    'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
+                    'TAGGED_TO_PORTFOLIO': '',
+                    'TAGGED_TO_EMPLOYEE': '',
+                    'TAGGED_TO_MANAGER': '',
+                    'TAGGED_TO_DIRECTOR': '',
+                    'TAGGED_TO_AU': '',
+                    'TAGGING_CRITERIA': 'UNTAGGED',
+                    'DISTANCE_MILES': None,
+                    'CUSTOMER_OVERLAP_COUNT': 0,
+                    'EXISTING_PORTFOLIO_SIZE': 0,
+                    'EXISTING_AVG_DEPOSIT_BAL': None,
+                    'EXISTING_AVG_GROSS_SALES': None,
+                    'EXISTING_AVG_BANK_REVENUE': None,
+                    'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
+                    'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
+                    'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
+                })
     
     # Tag CENTRALIZED portfolios by customer overlap
     if len(new_centralized) > 0:
