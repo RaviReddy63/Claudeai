@@ -59,20 +59,6 @@ def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
         print(f"Error in distance calculation: {e}")
         return float('inf')
 
-def calculate_portfolio_centroids(customer_au_assignments):
-    """Calculate centroid coordinates for each new portfolio"""
-    # Clean data before grouping
-    clean_assignments = customer_au_assignments.copy()
-    clean_assignments = clean_assignments.dropna(subset=['ASSIGNED_AU', 'TYPE', 'LAT_NUM', 'LON_NUM'])
-    
-    portfolio_centroids = clean_assignments.groupby(['ASSIGNED_AU', 'TYPE']).agg({
-        'LAT_NUM': 'mean',
-        'LON_NUM': 'mean',
-        'CG_ECN': 'count'
-    }).reset_index()
-    portfolio_centroids.columns = ['ASSIGNED_AU', 'TYPE', 'CENTROID_LAT', 'CENTROID_LON', 'CUSTOMER_COUNT']
-    return portfolio_centroids
-
 def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch_df):
     """Get existing portfolios under MOJGAN MADADI"""
     # Clean the dataframes first
@@ -207,15 +193,28 @@ def safe_get_value(row, column, default=''):
     except (KeyError, IndexError):
         return default
 
+def get_unique_new_portfolios(customer_au_assignments):
+    """Get unique new portfolios with their customer counts"""
+    # Clean data before grouping
+    clean_assignments = customer_au_assignments.copy()
+    clean_assignments = clean_assignments.dropna(subset=['ASSIGNED_AU', 'TYPE', 'CG_ECN'])
+    
+    portfolio_summary = clean_assignments.groupby(['ASSIGNED_AU', 'TYPE']).agg({
+        'CG_ECN': 'count'
+    }).reset_index()
+    portfolio_summary.columns = ['ASSIGNED_AU', 'TYPE', 'CUSTOMER_COUNT']
+    
+    return portfolio_summary
+
 def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df):
-    """Main function to tag new portfolios to existing MOJGAN MADADI portfolios"""
+    """Main function to tag new portfolios to existing MOJGAN MADADI portfolios using AU locations"""
     
     print("=== TAGGING NEW PORTFOLIOS TO MOJGAN MADADI PORTFOLIOS ===")
     
-    # Calculate centroids for new portfolios
-    new_portfolio_centroids = calculate_portfolio_centroids(customer_au_assignments)
-    new_inmarket = new_portfolio_centroids[new_portfolio_centroids['TYPE'] == 'INMARKET']
-    new_centralized = new_portfolio_centroids[new_portfolio_centroids['TYPE'] == 'CENTRALIZED']
+    # Get unique new portfolios with customer counts
+    new_portfolios = get_unique_new_portfolios(customer_au_assignments)
+    new_inmarket = new_portfolios[new_portfolios['TYPE'] == 'INMARKET']
+    new_centralized = new_portfolios[new_portfolios['TYPE'] == 'CENTRALIZED']
     
     print(f"New portfolios: IN MARKET: {len(new_inmarket)}, CENTRALIZED: {len(new_centralized)}")
     
@@ -227,14 +226,12 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     print(f"Existing MOJGAN MADADI portfolios: IN MARKET: {len(existing_inmarket)}, CENTRALIZED: {len(existing_centralized)}")
     
     all_tags = []
-    used_existing_inmarket = set()
-    used_existing_centralized = set()
     
-    # Tag IN MARKET portfolios by distance
-    untagged_new_inmarket = []
+    # PHASE 1: Tag IN MARKET portfolios by AU distance
     if len(new_inmarket) > 0 and len(existing_inmarket) > 0:
+        used_existing_inmarket = set()
         
-        # Create all distance combinations
+        # Create all distance combinations using AU locations
         inmarket_combinations = []
         for _, new_portfolio in new_inmarket.iterrows():
             new_au = new_portfolio['ASSIGNED_AU']
@@ -290,155 +287,6 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             
             all_tags.append({
                 'NEW_AU': new_au,
-                'NEW_TYPE': 'CENTRALIZED',
-                'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                'TAGGED_TO_PORTFOLIO': '',
-                'TAGGED_TO_EMPLOYEE': '',
-                'TAGGED_TO_MANAGER': '',
-                'TAGGED_TO_DIRECTOR': '',
-                'TAGGED_TO_AU': '',
-                'TAGGING_CRITERIA': 'UNTAGGED',
-                'DISTANCE_MILES': None,
-                'CUSTOMER_OVERLAP_COUNT': 0,
-                'EXISTING_PORTFOLIO_SIZE': 0,
-                'EXISTING_AVG_DEPOSIT_BAL': None,
-                'EXISTING_AVG_GROSS_SALES': None,
-                'EXISTING_AVG_BANK_REVENUE': None,
-                'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-            })
-    
-    # Create initial results dataframe
-    tagging_results = pd.DataFrame(all_tags)
-    
-    # Handle remaining untagged existing portfolios - tag to nearest tagged portfolio's manager
-    all_existing_portfolios = set()
-    for _, portfolio in existing_inmarket.iterrows():
-        port_code = safe_get_value(portfolio, 'PORT_CODE', '')
-        if port_code:
-            all_existing_portfolios.add(port_code)
-    
-    for _, portfolio in existing_centralized.iterrows():
-        port_code = safe_get_value(portfolio, 'PORT_CODE', '')
-        if port_code:
-            all_existing_portfolios.add(port_code)
-    
-    untagged_existing_portfolios = all_existing_portfolios - used_existing_inmarket - used_existing_centralized
-    
-    # For each untagged existing portfolio, find nearest tagged portfolio and use its manager/director
-    if len(untagged_existing_portfolios) > 0 and len(tagging_results) > 0:
-        tagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] != '']
-        
-        for untagged_port_code in untagged_existing_portfolios:
-            # Find the portfolio info
-            untagged_portfolio_info = None
-            for _, portfolio in existing_inmarket.iterrows():
-                if safe_get_value(portfolio, 'PORT_CODE', '') == untagged_port_code:
-                    untagged_portfolio_info = portfolio
-                    break
-            
-            if untagged_portfolio_info is None:
-                for _, portfolio in existing_centralized.iterrows():
-                    if safe_get_value(portfolio, 'PORT_CODE', '') == untagged_port_code:
-                        untagged_portfolio_info = portfolio
-                        break
-            
-            if untagged_portfolio_info is not None:
-                # Get coordinates for distance calculation (if IN MARKET)
-                untagged_lat = safe_get_value(untagged_portfolio_info, 'BRANCH_LAT_NUM', 0)
-                untagged_lon = safe_get_value(untagged_portfolio_info, 'BRANCH_LON_NUM', 0)
-                untagged_type = safe_get_value(untagged_portfolio_info, 'ROLE_TYPE', '')
-                
-                closest_distance = float('inf')
-                closest_manager = ''
-                closest_director = ''
-                
-                # Find closest tagged portfolio
-                for _, tagged_row in tagged_portfolios.iterrows():
-                    if untagged_type == 'IN MARKET' and tagged_row['NEW_TYPE'] == 'IN MARKET':
-                        # Calculate distance for IN MARKET portfolios
-                        tagged_au = tagged_row['NEW_AU']
-                        tagged_au_info = branch_df[branch_df['BRANCH_AU'] == tagged_au]
-                        
-                        if len(tagged_au_info) > 0:
-                            tagged_lat = safe_get_value(tagged_au_info.iloc[0], 'BRANCH_LAT_NUM', 0)
-                            tagged_lon = safe_get_value(tagged_au_info.iloc[0], 'BRANCH_LON_NUM', 0)
-                            distance = haversine_distance_vectorized(untagged_lat, untagged_lon, tagged_lat, tagged_lon)
-                            
-                            if distance < closest_distance:
-                                closest_distance = distance
-                                closest_manager = tagged_row['TAGGED_TO_MANAGER']
-                                closest_director = tagged_row['TAGGED_TO_DIRECTOR']
-                    
-                    elif untagged_type == 'CENTRALIZED':
-                        # For centralized, just pick the first tagged centralized portfolio
-                        if tagged_row['NEW_TYPE'] == 'CENTRALIZED':
-                            closest_manager = tagged_row['TAGGED_TO_MANAGER']
-                            closest_director = tagged_row['TAGGED_TO_DIRECTOR']
-                            break
-                
-                # If no match found in same type, use any tagged portfolio
-                if not closest_manager and len(tagged_portfolios) > 0:
-                    first_tagged = tagged_portfolios.iloc[0]
-                    closest_manager = first_tagged['TAGGED_TO_MANAGER']
-                    closest_director = first_tagged['TAGGED_TO_DIRECTOR']
-                
-                # Get customers and financial metrics for untagged portfolio
-                untagged_customers = existing_portfolio_customers.get(untagged_port_code, set())
-                untagged_avg_deposit, untagged_avg_gross_sales, untagged_avg_bank_revenue, untagged_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(untagged_port_code, client_groups_df)
-                
-                # Add entry for untagged existing portfolio
-                all_tags.append({
-                    'NEW_AU': f'EXISTING_{untagged_port_code}',
-                    'NEW_TYPE': untagged_type,
-                    'NEW_CUSTOMER_COUNT': len(untagged_customers),
-                    'TAGGED_TO_PORTFOLIO': '',
-                    'TAGGED_TO_EMPLOYEE': '',
-                    'TAGGED_TO_MANAGER': closest_manager,
-                    'TAGGED_TO_DIRECTOR': closest_director,
-                    'TAGGED_TO_AU': '',
-                    'TAGGING_CRITERIA': 'UNTAGGED_EXISTING_TO_NEAREST_MANAGER',
-                    'DISTANCE_MILES': closest_distance if closest_distance != float('inf') else None,
-                    'CUSTOMER_OVERLAP_COUNT': 0,
-                    'EXISTING_PORTFOLIO_SIZE': untagged_portfolio_size,
-                    'EXISTING_AVG_DEPOSIT_BAL': untagged_avg_deposit,
-                    'EXISTING_AVG_GROSS_SALES': untagged_avg_gross_sales,
-                    'EXISTING_AVG_BANK_REVENUE': untagged_avg_bank_revenue,
-                    'NEW_AVG_DEPOSIT_BAL': untagged_avg_deposit,
-                    'NEW_AVG_GROSS_SALES': untagged_avg_gross_sales,
-                    'NEW_AVG_BANK_REVENUE': untagged_avg_bank_revenue
-                })
-    
-    # Create final results dataframe
-    tagging_results = pd.DataFrame(all_tags)
-    
-    # Count new customers not in active portfolios
-    new_customers_count = count_new_customers_not_in_active_portfolios(customer_au_assignments, client_groups_df)
-    
-    # Print summary
-    print(f"\nSUMMARY:")
-    print(f"New customers not in any active portfolio: {new_customers_count}")
-    if len(tagging_results) > 0:
-        tagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] != '']
-        untagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] == '']
-        manager_only_tagged = tagging_results[
-            (tagging_results['TAGGED_TO_PORTFOLIO'] == '') & 
-            (tagging_results['TAGGED_TO_MANAGER'] != '')
-        ]
-        
-        print(f"Tagged to MOJGAN MADADI portfolios: {len(tagged_portfolios)}")
-        print(f"Tagged to manager only (untagged existing): {len(manager_only_tagged)}")
-        print(f"Completely untagged: {len(untagged_portfolios) - len(manager_only_tagged)}")
-        
-        if len(tagged_portfolios) > 0:
-            print(f"Total customer overlap: {tagged_portfolios['CUSTOMER_OVERLAP_COUNT'].sum()}")
-    
-    return tagging_results
-
-# Usage:
-# tagging_results = tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df)
-# tagging_results.to_csv('portfolio_tagging_results.csv', index=False)': new_au,
                 'NEW_TYPE': 'IN MARKET',
                 'NEW_CUSTOMER_COUNT': combo['new_customer_count'],
                 'TAGGED_TO_PORTFOLIO': existing_portfolio,
@@ -446,7 +294,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGED_TO_MANAGER': combo['existing_manager'],
                 'TAGGED_TO_DIRECTOR': combo['existing_director'],
                 'TAGGED_TO_AU': combo['existing_au'],
-                'TAGGING_CRITERIA': 'CLOSEST_DISTANCE',
+                'TAGGING_CRITERIA': 'CLOSEST_AU_DISTANCE',
                 'DISTANCE_MILES': combo['distance'],
                 'CUSTOMER_OVERLAP_COUNT': overlap_count,
                 'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
@@ -460,149 +308,61 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             
             used_new_inmarket.add(new_au)
             used_existing_inmarket.add(existing_portfolio)
-        
-        # Collect untagged IN MARKET portfolios for potential centralized tagging
-        for _, new_portfolio in new_inmarket.iterrows():
-            new_au = new_portfolio['ASSIGNED_AU']
-            if new_au not in used_new_inmarket:
-                untagged_new_inmarket.append(new_portfolio)
-    
-    # Handle case where no existing IN MARKET portfolios exist
-    elif len(new_inmarket) > 0:
-        for _, new_portfolio in new_inmarket.iterrows():
-            untagged_new_inmarket.append(new_portfolio)
-    
-    # Tag untagged IN MARKET portfolios to CENTRALIZED portfolios
-    if len(untagged_new_inmarket) > 0 and len(existing_centralized) > 0:
-        for new_portfolio in untagged_new_inmarket:
-            new_au = new_portfolio['ASSIGNED_AU']
-            new_customers = customer_au_assignments[
-                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                (customer_au_assignments['TYPE'] == 'INMARKET')
-            ]['CG_ECN'].dropna().tolist()
-            
-            best_centralized_match = None
-            best_overlap = 0
-            
-            # Find best centralized portfolio based on customer overlap
-            for _, existing_portfolio in existing_centralized.iterrows():
-                existing_port_code = safe_get_value(existing_portfolio, 'PORT_CODE', '')
-                if not existing_port_code or existing_port_code in used_existing_centralized:
-                    continue
-                    
-                existing_customers = existing_portfolio_customers.get(existing_port_code, set())
-                overlap_count = calculate_customer_overlap(new_customers, existing_customers)
-                
-                if overlap_count > best_overlap:
-                    best_overlap = overlap_count
-                    best_centralized_match = existing_portfolio
-            
-            if best_centralized_match is not None and best_overlap > 0:
-                # Get financial metrics
-                existing_port_code = safe_get_value(best_centralized_match, 'PORT_CODE', '')
-                existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(existing_port_code, client_groups_df)
-                new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-                
-                all_tags.append({
-                    'NEW_AU': new_au,
-                    'NEW_TYPE': 'IN MARKET',
-                    'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                    'TAGGED_TO_PORTFOLIO': existing_port_code,
-                    'TAGGED_TO_EMPLOYEE': safe_get_value(best_centralized_match, 'EMPLOYEE_NAME', ''),
-                    'TAGGED_TO_MANAGER': safe_get_value(best_centralized_match, 'MANAGER_NAME', ''),
-                    'TAGGED_TO_DIRECTOR': safe_get_value(best_centralized_match, 'DIRECTOR_NAME', ''),
-                    'TAGGED_TO_AU': 'N/A (CENTRALIZED)',
-                    'TAGGING_CRITERIA': 'CENTRALIZED_CUSTOMER_OVERLAP',
-                    'DISTANCE_MILES': None,
-                    'CUSTOMER_OVERLAP_COUNT': best_overlap,
-                    'EXISTING_PORTFOLIO_SIZE': existing_portfolio_size,
-                    'EXISTING_AVG_DEPOSIT_BAL': existing_avg_deposit,
-                    'EXISTING_AVG_GROSS_SALES': existing_avg_gross_sales,
-                    'EXISTING_AVG_BANK_REVENUE': existing_avg_bank_revenue,
-                    'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                    'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                    'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-                })
-                used_existing_centralized.add(existing_port_code)
-            else:
-                # Still untagged after trying centralized
-                new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-                
-                all_tags.append({
-                    'NEW_AU': new_au,
-                    'NEW_TYPE': 'IN MARKET',
-                    'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                    'TAGGED_TO_PORTFOLIO': '',
-                    'TAGGED_TO_EMPLOYEE': '',
-                    'TAGGED_TO_MANAGER': '',
-                    'TAGGED_TO_DIRECTOR': '',
-                    'TAGGED_TO_AU': '',
-                    'TAGGING_CRITERIA': 'UNTAGGED',
-                    'DISTANCE_MILES': None,
-                    'CUSTOMER_OVERLAP_COUNT': 0,
-                    'EXISTING_PORTFOLIO_SIZE': 0,
-                    'EXISTING_AVG_DEPOSIT_BAL': None,
-                    'EXISTING_AVG_GROSS_SALES': None,
-                    'EXISTING_AVG_BANK_REVENUE': None,
-                    'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                    'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                    'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-                })
     else:
-        # Add remaining untagged IN MARKET portfolios
-        for new_portfolio in untagged_new_inmarket:
-            new_au = new_portfolio['ASSIGNED_AU']
-            new_customers = customer_au_assignments[
-                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                (customer_au_assignments['TYPE'] == 'INMARKET')
-            ]['CG_ECN'].dropna().tolist()
-            
-            new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-            
-            all_tags.append({
-                'NEW_AU': new_au,
-                'NEW_TYPE': 'IN MARKET',
-                'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                'TAGGED_TO_PORTFOLIO': '',
-                'TAGGED_TO_EMPLOYEE': '',
-                'TAGGED_TO_MANAGER': '',
-                'TAGGED_TO_DIRECTOR': '',
-                'TAGGED_TO_AU': '',
-                'TAGGING_CRITERIA': 'UNTAGGED',
-                'DISTANCE_MILES': None,
-                'CUSTOMER_OVERLAP_COUNT': 0,
-                'EXISTING_PORTFOLIO_SIZE': 0,
-                'EXISTING_AVG_DEPOSIT_BAL': None,
-                'EXISTING_AVG_GROSS_SALES': None,
-                'EXISTING_AVG_BANK_REVENUE': None,
-                'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
+        used_new_inmarket = set()
+    
+    # Handle untagged IN MARKET portfolios (will be processed in Phase 2)
+    untagged_inmarket_portfolios = []
+    for _, new_portfolio in new_inmarket.iterrows():
+        new_au = new_portfolio['ASSIGNED_AU']
+        if new_au not in used_new_inmarket:
+            untagged_inmarket_portfolios.append({
+                'au': new_au,
+                'type': 'IN MARKET',
+                'customer_count': new_portfolio['CUSTOMER_COUNT']
             })
     
-    # Tag CENTRALIZED portfolios by customer overlap
-    if len(new_centralized) > 0 and len(existing_centralized) > 0:
+    # Add all CENTRALIZED portfolios to untagged list (will be processed in Phase 2)
+    untagged_centralized_portfolios = []
+    for _, new_portfolio in new_centralized.iterrows():
+        new_au = new_portfolio['ASSIGNED_AU']
+        untagged_centralized_portfolios.append({
+            'au': new_au,
+            'type': 'CENTRALIZED',
+            'customer_count': new_portfolio['CUSTOMER_COUNT']
+        })
+    
+    # Combine all untagged portfolios
+    all_untagged_portfolios = untagged_inmarket_portfolios + untagged_centralized_portfolios
+    
+    # PHASE 2: Tag remaining CENTRALIZED existing portfolios to untagged new portfolios based on customer overlap
+    if len(all_untagged_portfolios) > 0 and len(existing_centralized) > 0:
+        used_existing_centralized = set()
         
-        # Create all overlap combinations
-        centralized_combinations = []
-        for _, new_portfolio in new_centralized.iterrows():
-            new_au = new_portfolio['ASSIGNED_AU']
+        # Create all overlap combinations between untagged new portfolios and existing centralized portfolios
+        overlap_combinations = []
+        for untagged_portfolio in all_untagged_portfolios:
+            new_au = untagged_portfolio['au']
+            new_type = untagged_portfolio['type']
+            
+            # Get customers for this untagged portfolio
             new_customers = customer_au_assignments[
                 (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                (customer_au_assignments['TYPE'] == 'CENTRALIZED')
+                (customer_au_assignments['TYPE'] == new_type)
             ]['CG_ECN'].dropna().tolist()
             
             for _, existing_portfolio in existing_centralized.iterrows():
                 existing_port_code = safe_get_value(existing_portfolio, 'PORT_CODE', '')
-                if not existing_port_code or existing_port_code in used_existing_centralized:
+                if not existing_port_code:
                     continue
                     
                 existing_customers = existing_portfolio_customers.get(existing_port_code, set())
                 overlap_count = calculate_customer_overlap(new_customers, existing_customers)
                 
-                centralized_combinations.append({
+                overlap_combinations.append({
                     'new_au': new_au,
-                    'new_customer_count': new_portfolio['CUSTOMER_COUNT'],
+                    'new_type': new_type,
+                    'new_customer_count': untagged_portfolio['customer_count'],
                     'new_customers': new_customers,
                     'existing_portfolio': existing_port_code,
                     'existing_employee': safe_get_value(existing_portfolio, 'EMPLOYEE_NAME', ''),
@@ -612,15 +372,15 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                     'existing_customers': existing_customers
                 })
         
-        # Sort by overlap count and assign one-to-one
-        centralized_combinations_sorted = sorted(centralized_combinations, key=lambda x: x['overlap_count'], reverse=True)
-        used_new_centralized = set()
+        # Sort by overlap count (descending) and assign one-to-one
+        overlap_combinations_sorted = sorted(overlap_combinations, key=lambda x: x['overlap_count'], reverse=True)
+        used_new_untagged = set()
         
-        for combo in centralized_combinations_sorted:
+        for combo in overlap_combinations_sorted:
             new_au = combo['new_au']
             existing_portfolio = combo['existing_portfolio']
             
-            if new_au in used_new_centralized or existing_portfolio in used_existing_centralized or combo['overlap_count'] == 0:
+            if new_au in used_new_untagged or existing_portfolio in used_existing_centralized or combo['overlap_count'] == 0:
                 continue
             
             # Get financial metrics
@@ -629,7 +389,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             
             all_tags.append({
                 'NEW_AU': new_au,
-                'NEW_TYPE': 'CENTRALIZED',
+                'NEW_TYPE': combo['new_type'],
                 'NEW_CUSTOMER_COUNT': combo['new_customer_count'],
                 'TAGGED_TO_PORTFOLIO': existing_portfolio,
                 'TAGGED_TO_EMPLOYEE': combo['existing_employee'],
@@ -648,51 +408,70 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
             })
             
-            used_new_centralized.add(new_au)
+            used_new_untagged.add(new_au)
             used_existing_centralized.add(existing_portfolio)
-        
-        # Handle untagged CENTRALIZED portfolios
-        for _, new_portfolio in new_centralized.iterrows():
-            new_au = new_portfolio['ASSIGNED_AU']
-            if new_au not in used_new_centralized:
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'] == 'CENTRALIZED')
-                ]['CG_ECN'].dropna().tolist()
-                
-                new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
-                
-                all_tags.append({
-                    'NEW_AU': new_au,
-                    'NEW_TYPE': 'CENTRALIZED',
-                    'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
-                    'TAGGED_TO_PORTFOLIO': '',
-                    'TAGGED_TO_EMPLOYEE': '',
-                    'TAGGED_TO_MANAGER': '',
-                    'TAGGED_TO_DIRECTOR': '',
-                    'TAGGED_TO_AU': '',
-                    'TAGGING_CRITERIA': 'UNTAGGED',
-                    'DISTANCE_MILES': None,
-                    'CUSTOMER_OVERLAP_COUNT': 0,
-                    'EXISTING_PORTFOLIO_SIZE': 0,
-                    'EXISTING_AVG_DEPOSIT_BAL': None,
-                    'EXISTING_AVG_GROSS_SALES': None,
-                    'EXISTING_AVG_BANK_REVENUE': None,
-                    'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
-                    'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                    'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
-                })
+    else:
+        used_new_untagged = set()
     
-    # Handle case where no existing CENTRALIZED portfolios exist
-    elif len(new_centralized) > 0:
-        for _, new_portfolio in new_centralized.iterrows():
-            new_au = new_portfolio['ASSIGNED_AU']
+    # PHASE 3: Handle completely untagged portfolios
+    for untagged_portfolio in all_untagged_portfolios:
+        new_au = untagged_portfolio['au']
+        if new_au not in used_new_untagged:
+            new_type = untagged_portfolio['type']
             new_customers = customer_au_assignments[
                 (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                (customer_au_assignments['TYPE'] == 'CENTRALIZED')
+                (customer_au_assignments['TYPE'] == new_type)
             ]['CG_ECN'].dropna().tolist()
             
             new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
             
             all_tags.append({
-                'NEW_AU
+                'NEW_AU': new_au,
+                'NEW_TYPE': new_type,
+                'NEW_CUSTOMER_COUNT': untagged_portfolio['customer_count'],
+                'TAGGED_TO_PORTFOLIO': '',
+                'TAGGED_TO_EMPLOYEE': '',
+                'TAGGED_TO_MANAGER': '',
+                'TAGGED_TO_DIRECTOR': '',
+                'TAGGED_TO_AU': '',
+                'TAGGING_CRITERIA': 'UNTAGGED',
+                'DISTANCE_MILES': None,
+                'CUSTOMER_OVERLAP_COUNT': 0,
+                'EXISTING_PORTFOLIO_SIZE': 0,
+                'EXISTING_AVG_DEPOSIT_BAL': None,
+                'EXISTING_AVG_GROSS_SALES': None,
+                'EXISTING_AVG_BANK_REVENUE': None,
+                'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
+                'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
+                'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
+            })
+    
+    # Create results dataframe
+    tagging_results = pd.DataFrame(all_tags)
+    
+    # Count new customers not in active portfolios
+    new_customers_count = count_new_customers_not_in_active_portfolios(customer_au_assignments, client_groups_df)
+    
+    # Print summary
+    print(f"\nSUMMARY:")
+    print(f"New customers not in any active portfolio: {new_customers_count}")
+    if len(tagging_results) > 0:
+        tagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] != '']
+        untagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] == '']
+        print(f"Tagged to MOJGAN MADADI portfolios: {len(tagged_portfolios)}")
+        print(f"Untagged (left blank): {len(untagged_portfolios)}")
+        
+        if len(tagged_portfolios) > 0:
+            print(f"Total customer overlap: {tagged_portfolios['CUSTOMER_OVERLAP_COUNT'].sum()}")
+            
+        # Break down by tagging criteria
+        distance_tagged = tagged_portfolios[tagged_portfolios['TAGGING_CRITERIA'] == 'CLOSEST_AU_DISTANCE']
+        overlap_tagged = tagged_portfolios[tagged_portfolios['TAGGING_CRITERIA'] == 'MAX_CUSTOMER_OVERLAP']
+        print(f"Tagged by AU distance (IN MARKET): {len(distance_tagged)}")
+        print(f"Tagged by customer overlap (CENTRALIZED to untagged): {len(overlap_tagged)}")
+    
+    return tagging_results
+
+# Usage:
+# tagging_results = tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df)
+# tagging_results.to_csv('portfolio_tagging_results.csv', index=False)
