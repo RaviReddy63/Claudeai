@@ -13,33 +13,11 @@ def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
     if len(portfolio_data) == 0:
         return None, None, None
     
-    # Safe calculation with error handling
-    try:
-        avg_deposit = None
-        if 'DEPOSIT_BAL' in portfolio_data.columns:
-            deposit_col = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
-            avg_deposit = deposit_col.mean() if not deposit_col.isna().all() else None
-    except:
-        avg_deposit = None
-    
-    try:
-        avg_gross_sales = None
-        if 'CG_GROSS_SALES' in portfolio_data.columns:
-            sales_col = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
-            avg_gross_sales = sales_col.mean() if not sales_col.isna().all() else None
-    except:
-        avg_gross_sales = None
-    
-    try:
-        avg_bank_revenue = None
-        if 'BANK_REVENUE' in portfolio_data.columns:
-            revenue_col = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
-            avg_bank_revenue = revenue_col.mean() if not revenue_col.isna().all() else None
-    except:
-        avg_bank_revenue = None
+    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue
-
 import pandas as pd
 import numpy as np
 
@@ -129,31 +107,9 @@ def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_gro
     if len(portfolio_data) == 0:
         return None, None, None, 0
     
-    # Safe calculation with error handling
-    try:
-        avg_deposit = None
-        if 'DEPOSIT_BAL' in portfolio_data.columns:
-            deposit_col = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
-            avg_deposit = deposit_col.mean() if not deposit_col.isna().all() else None
-    except:
-        avg_deposit = None
-    
-    try:
-        avg_gross_sales = None
-        if 'CG_GROSS_SALES' in portfolio_data.columns:
-            sales_col = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
-            avg_gross_sales = sales_col.mean() if not sales_col.isna().all() else None
-    except:
-        avg_gross_sales = None
-    
-    try:
-        avg_bank_revenue = None
-        if 'BANK_REVENUE' in portfolio_data.columns:
-            revenue_col = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
-            avg_bank_revenue = revenue_col.mean() if not revenue_col.isna().all() else None
-    except:
-        avg_bank_revenue = None
-    
+    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
     portfolio_size = len(portfolio_data)
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue, portfolio_size
@@ -195,14 +151,9 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         # Create all distance combinations
         inmarket_combinations = []
         for _, new_portfolio in new_inmarket.iterrows():
+            new_lat = new_portfolio['CENTROID_LAT']
+            new_lon = new_portfolio['CENTROID_LON']
             new_au = new_portfolio['ASSIGNED_AU']
-            
-            # Get new AU coordinates from branch_df
-            new_au_info = branch_df[branch_df['BRANCH_AU'] == new_au]
-            if len(new_au_info) == 0:
-                continue
-            new_lat = new_au_info.iloc[0]['BRANCH_LAT_NUM']
-            new_lon = new_au_info.iloc[0]['BRANCH_LON_NUM']
             
             for _, existing_portfolio in existing_inmarket.iterrows():
                 existing_lat = existing_portfolio['BRANCH_LAT_NUM']
@@ -274,12 +225,8 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         for _, new_portfolio in new_inmarket.iterrows():
             new_au = new_portfolio['ASSIGNED_AU']
             if new_au not in used_new_inmarket:
-                # Get new AU coordinates from branch_df
-                new_au_info = branch_df[branch_df['BRANCH_AU'] == new_au]
-                if len(new_au_info) == 0:
-                    continue
-                new_lat = new_au_info.iloc[0]['BRANCH_LAT_NUM']
-                new_lon = new_au_info.iloc[0]['BRANCH_LON_NUM']
+                new_lat = new_portfolio['CENTROID_LAT']
+                new_lon = new_portfolio['CENTROID_LON']
                 
                 # Find closest manager from existing portfolios
                 min_distance = float('inf')
