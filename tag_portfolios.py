@@ -13,9 +13,30 @@ def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
     if len(portfolio_data) == 0:
         return None, None, None
     
-    avg_deposit = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce').mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce').mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce').mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    # Safe calculation with error handling
+    try:
+        avg_deposit = None
+        if 'DEPOSIT_BAL' in portfolio_data.columns:
+            deposit_col = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
+            avg_deposit = deposit_col.mean() if not deposit_col.isna().all() else None
+    except:
+        avg_deposit = None
+    
+    try:
+        avg_gross_sales = None
+        if 'CG_GROSS_SALES' in portfolio_data.columns:
+            sales_col = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
+            avg_gross_sales = sales_col.mean() if not sales_col.isna().all() else None
+    except:
+        avg_gross_sales = None
+    
+    try:
+        avg_bank_revenue = None
+        if 'BANK_REVENUE' in portfolio_data.columns:
+            revenue_col = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
+            avg_bank_revenue = revenue_col.mean() if not revenue_col.isna().all() else None
+    except:
+        avg_bank_revenue = None
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue
 
@@ -108,9 +129,31 @@ def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_gro
     if len(portfolio_data) == 0:
         return None, None, None, 0
     
-    avg_deposit = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce').mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce').mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce').mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    # Safe calculation with error handling
+    try:
+        avg_deposit = None
+        if 'DEPOSIT_BAL' in portfolio_data.columns:
+            deposit_col = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce')
+            avg_deposit = deposit_col.mean() if not deposit_col.isna().all() else None
+    except:
+        avg_deposit = None
+    
+    try:
+        avg_gross_sales = None
+        if 'CG_GROSS_SALES' in portfolio_data.columns:
+            sales_col = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce')
+            avg_gross_sales = sales_col.mean() if not sales_col.isna().all() else None
+    except:
+        avg_gross_sales = None
+    
+    try:
+        avg_bank_revenue = None
+        if 'BANK_REVENUE' in portfolio_data.columns:
+            revenue_col = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce')
+            avg_bank_revenue = revenue_col.mean() if not revenue_col.isna().all() else None
+    except:
+        avg_bank_revenue = None
+    
     portfolio_size = len(portfolio_data)
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue, portfolio_size
