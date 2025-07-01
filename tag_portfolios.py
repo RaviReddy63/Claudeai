@@ -13,9 +13,9 @@ def get_portfolio_financial_metrics(portfolio_customers, client_groups_df):
     if len(portfolio_data) == 0:
         return None, None, None
     
-    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    avg_deposit = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce').mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce').mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce').mean() if 'BANK_REVENUE' in portfolio_data.columns else None
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue
 
@@ -108,9 +108,9 @@ def get_portfolio_financial_metrics_by_portfolio_code(portfolio_code, client_gro
     if len(portfolio_data) == 0:
         return None, None, None, 0
     
-    avg_deposit = portfolio_data['DEPOSIT_BAL'].mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
-    avg_gross_sales = portfolio_data['CG_GROSS_SALES'].mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
-    avg_bank_revenue = portfolio_data['BANK_REVENUE'].mean() if 'BANK_REVENUE' in portfolio_data.columns else None
+    avg_deposit = pd.to_numeric(portfolio_data['DEPOSIT_BAL'], errors='coerce').mean() if 'DEPOSIT_BAL' in portfolio_data.columns else None
+    avg_gross_sales = pd.to_numeric(portfolio_data['CG_GROSS_SALES'], errors='coerce').mean() if 'CG_GROSS_SALES' in portfolio_data.columns else None
+    avg_bank_revenue = pd.to_numeric(portfolio_data['BANK_REVENUE'], errors='coerce').mean() if 'BANK_REVENUE' in portfolio_data.columns else None
     portfolio_size = len(portfolio_data)
     
     return avg_deposit, avg_gross_sales, avg_bank_revenue, portfolio_size
