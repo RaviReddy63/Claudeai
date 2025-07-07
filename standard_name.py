@@ -49,8 +49,16 @@ def standardize_names(df, manager_col='MANAGER_NAME', director_col='DIRECTOR_NAM
         director_df = df_copy[df_copy[director_col] == director]
         manager_map = find_matches(director_df[manager_col])
         for old, new in manager_map.items():
-            mask = df_copy[director_col] == director
-            df_copy.loc[mask, manager_col] = df_copy.loc[mask, manager_col].replace(old, new)
+            mask = (df_copy[director_col] == director) & (df_copy[manager_col] == old)
+            df_copy.loc[mask, manager_col] = new
+    
+    # Handle null director cases - standardize managers globally where director is null
+    null_director_df = df_copy[df_copy[director_col].isna()]
+    if not null_director_df.empty:
+        manager_map = find_matches(null_director_df[manager_col])
+        for old, new in manager_map.items():
+            mask = df_copy[director_col].isna() & (df_copy[manager_col] == old)
+            df_copy.loc[mask, manager_col] = new
     
     return df_copy
 
