@@ -37,7 +37,10 @@ def standardize_names(df):
                     used_directors.add(other_director)
         
         if len(matching_directors) > 1:
-            longest_name = max(matching_directors, key=lambda x: len(x))
+            longest_name = matching_directors[0]
+            for name in matching_directors:
+                if len(name) > len(longest_name):
+                    longest_name = name
             for name in matching_directors:
                 if name != longest_name:
                     director_mapping[name] = longest_name
@@ -68,7 +71,10 @@ def standardize_names(df):
                 used_combinations.add((other_manager, other_director))
         
         if len(matching_managers) > 1:
-            longest_name = max(matching_managers, key=lambda x: len(x))
+            longest_name = matching_managers[0]
+            for name in matching_managers:
+                if len(name) > len(longest_name):
+                    longest_name = name
             for name in matching_managers:
                 if name != longest_name:
                     manager_mapping[name] = longest_name
