@@ -94,4 +94,8 @@ def standardize_names(df):
     
     df_copy['DIRECTOR_NAME'] = df_copy['DIRECTOR_NAME'].map(director_manager_mapping).fillna(df_copy['DIRECTOR_NAME'])
     
+    # Step 4: Replace Michelle Mclellan with corresponding manager names
+    mask = df_copy['DIRECTOR_NAME'].str.lower() == 'michelle mclellan'
+    df_copy.loc[mask, 'DIRECTOR_NAME'] = df_copy.loc[mask, 'MANAGER_NAME']
+    
     return df_copy
