@@ -33,7 +33,14 @@ def standardize_names(df, manager_col='MANAGER_NAME', director_col='DIRECTOR_NAM
                     matches.append(name2)
             
             if len(matches) > 1:
-                standard = max(matches, key=lambda x: len(x.split()))
+                # Find the name with most words as standard
+                standard = matches[0]
+                max_words = len(matches[0].split())
+                for match in matches:
+                    if len(match.split()) > max_words:
+                        standard = match
+                        max_words = len(match.split())
+                
                 for match in matches:
                     name_map[match] = standard
         
