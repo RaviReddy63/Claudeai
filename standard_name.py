@@ -33,13 +33,13 @@ def standardize_names(df, manager_col='MANAGER_NAME', director_col='DIRECTOR_NAM
                     matches.append(name2)
             
             if len(matches) > 1:
-                # Find the name with most words as standard
+                # Find the name with most characters as standard (longest name)
                 standard = matches[0]
-                max_words = len(matches[0].split())
+                max_length = len(matches[0])
                 for match in matches:
-                    if len(match.split()) > max_words:
+                    if len(match) > max_length:
                         standard = match
-                        max_words = len(match.split())
+                        max_length = len(match)
                 
                 for match in matches:
                     name_map[match] = standard
@@ -66,6 +66,21 @@ def standardize_names(df, manager_col='MANAGER_NAME', director_col='DIRECTOR_NAM
         for old, new in manager_map.items():
             mask = df_copy[director_col].isna() & (df_copy[manager_col] == old)
             df_copy.loc[mask, manager_col] = new
+    
+    # LAST STEP: Handle cases where director name appears in manager name - make them same
+    for idx, row in df_copy.iterrows():
+        if pd.notna(row[director_col]) and pd.notna(row[manager_col]):
+            dir_first, dir_last = get_name_parts(row[director_col])
+            mgr_first, mgr_last = get_name_parts(row[manager_col])
+            
+            # Check if full director name matches full manager name (both first AND last name)
+            if (dir_first and dir_last and mgr_first and mgr_last and 
+                dir_first == mgr_first and dir_last == mgr_last):
+                # Use the longer version as standard
+                if len(row[director_col]) >= len(row[manager_col]):
+                    df_copy.loc[idx, manager_col] = row[director_col]
+                else:
+                    df_copy.loc[idx, director_col] = row[manager_col]
     
     return df_copy
 
