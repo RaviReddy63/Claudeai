@@ -1039,31 +1039,6 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     print(f"Total assigned customers: {len(result_df)}")
     
     if len(result_df) > 0:
-        # Portfolio size analysis
-        inmarket_df = result_df[result_df['TYPE'] == 'INMARKET']
-        if len(inmarket_df) > 0:
-            inmarket_sizes = inmarket_df['ASSIGNED_AU'].value_counts()
-            print(f"\nINMARKET Portfolio Size Analysis:")
-            print(f"  Portfolios meeting minimum (≥200): {sum(inmarket_sizes >= 200)}")
-            print(f"  Portfolios below minimum (<200): {sum(inmarket_sizes < 200)}")
-            if sum(inmarket_sizes < 200) > 0:
-                print(f"  Smallest portfolio size: {inmarket_sizes.min()}")
-        
-        # Centralized cluster analysis
-        centralized_df = result_df[result_df['TYPE'] == 'CENTRALIZED']
-        if len(centralized_df) > 0 and 'CLUSTER_ID' in centralized_df.columns:
-            cluster_radii = []
-            for cluster_id in centralized_df['CLUSTER_ID'].unique():
-                cluster_customers = centralized_df[centralized_df['CLUSTER_ID'] == cluster_id]
-                coords = cluster_customers[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
-                radius = calculate_cluster_radius_vectorized(coords)
-                cluster_radii.append(radius)
-            
-            print(f"\nCentralized Cluster Radius Analysis:")
-            print(f"  Average radius: {np.mean(cluster_radii):.1f} miles")
-            print(f"  Maximum radius: {np.max(cluster_radii):.1f} miles")
-            print(f"  Clusters within 100-mile limit: {sum(np.array(cluster_radii) <= 100)}/{len(cluster_radii)}")
-        
         type_summary = result_df.groupby('TYPE').agg({
             'ECN': 'count',
             'DISTANCE_TO_AU': ['mean', 'max']
