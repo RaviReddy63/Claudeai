@@ -9,22 +9,37 @@ def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
     """Vectorized haversine distance calculation in miles"""
     R = 3959  # Earth's radius in miles
     
-    # Convert to numpy arrays if not already
-    lat1, lon1, lat2, lon2 = map(np.asarray, [lat1, lon1, lat2, lon2])
+    # Convert to numpy arrays if not already and ensure proper dtype
+    lat1 = np.asarray(lat1, dtype=np.float64)
+    lon1 = np.asarray(lon1, dtype=np.float64)
+    lat2 = np.asarray(lat2, dtype=np.float64)
+    lon2 = np.asarray(lon2, dtype=np.float64)
     
     # Convert to radians
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    lat1_rad = np.radians(lat1)
+    lon1_rad = np.radians(lon1)
+    lat2_rad = np.radians(lat2)
+    lon2_rad = np.radians(lon2)
     
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
     
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(a))
+    a = np.sin(dlat/2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # Clip to avoid numerical errors
     
-    return R * c
+    distance = R * c
+    
+    # Handle scalar case
+    if np.isscalar(distance):
+        return float(distance)
+    return distance
 
 def compute_distance_matrix(coords1, coords2):
     """Compute distance matrix between two sets of coordinates"""
+    # Ensure inputs are numpy arrays
+    coords1 = np.asarray(coords1, dtype=np.float64)
+    coords2 = np.asarray(coords2, dtype=np.float64)
+    
     lat1 = coords1[:, 0][:, np.newaxis]  # Shape: (n1, 1)
     lon1 = coords1[:, 1][:, np.newaxis]  # Shape: (n1, 1)
     lat2 = coords2[:, 0][np.newaxis, :]  # Shape: (1, n2)
@@ -34,18 +49,23 @@ def compute_distance_matrix(coords1, coords2):
 
 def calculate_cluster_radius_vectorized(coords):
     """Vectorized calculation of cluster radius"""
+    coords = np.asarray(coords, dtype=np.float64)
+    
     if len(coords) <= 1:
-        return 0
+        return 0.0
     
     centroid = coords.mean(axis=0)
     distances = haversine_distance_vectorized(
         coords[:, 0], coords[:, 1], 
         centroid[0], centroid[1]
     )
-    return np.max(distances)
+    return float(np.max(distances))
 
 def find_candidates_spatial(customer_coords, seed_coord, max_radius, ball_tree=None):
     """Use spatial indexing to find candidates within radius"""
+    customer_coords = np.asarray(customer_coords, dtype=np.float64)
+    seed_coord = np.asarray(seed_coord, dtype=np.float64)
+    
     if ball_tree is None:
         # Convert to radians for BallTree
         coords_rad = np.radians(customer_coords)
@@ -77,7 +97,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
     customers_clean['cluster'] = -1
     
     # Pre-compute coordinates array
-    coords = customers_clean[['LAT_NUM', 'LON_NUM']].values
+    coords = customers_clean[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
     
     # Build spatial index
     coords_rad = np.radians(coords)
@@ -121,7 +141,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
                 break
             
             # Test radius constraint
-            test_coords = np.array(current_coords + [coords[candidate_idx]])
+            test_coords = np.array(current_coords + [coords[candidate_idx]], dtype=np.float64)
             test_radius = calculate_cluster_radius_vectorized(test_coords)
             
             if test_radius <= max_radius:
@@ -132,7 +152,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
         if len(current_cluster) < min_size:
             unassigned_mask[seed_idx] = False
         elif len(current_cluster) <= max_size:
-            cluster_coords = np.array(current_coords)
+            cluster_coords = np.array(current_coords, dtype=np.float64)
             cluster_radius = calculate_cluster_radius_vectorized(cluster_coords)
             
             # Assign cluster
@@ -152,12 +172,12 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
             
         else:
             # Split large cluster using K-means
-            coords_array = np.array(current_coords)
+            coords_array = np.array(current_coords, dtype=np.float64)
             
             # Modified condition
             if len(current_cluster) > 0 and min_size > 0:
                 if len(current_cluster) // min_size < 3:
-                    n_splits = len(current_cluster) // min_size
+                    n_splits = max(1, len(current_cluster) // min_size)
                 else:
                     n_splits = 3
             else:
@@ -205,7 +225,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
     customers_clean['cluster'] = -1
     
     # Pre-compute coordinates array
-    coords = customers_clean[['LAT_NUM', 'LON_NUM']].values
+    coords = customers_clean[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
     
     # Build spatial index
     coords_rad = np.radians(coords)
@@ -249,7 +269,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                 break
             
             # Test radius constraint
-            test_coords = np.array(current_coords + [coords[candidate_idx]])
+            test_coords = np.array(current_coords + [coords[candidate_idx]], dtype=np.float64)
             test_radius = calculate_cluster_radius_vectorized(test_coords)
             
             if test_radius <= max_radius:
@@ -260,7 +280,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
         if len(current_cluster) < min_size:
             unassigned_mask[seed_idx] = False
         elif len(current_cluster) <= max_size:
-            cluster_coords = np.array(current_coords)
+            cluster_coords = np.array(current_coords, dtype=np.float64)
             cluster_radius = calculate_cluster_radius_vectorized(cluster_coords)
             
             # Double-check radius constraint
@@ -281,7 +301,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                 cluster_id += 1
             else:
                 # Cluster exceeds radius, try to split
-                coords_array = np.array(current_coords)
+                coords_array = np.array(current_coords, dtype=np.float64)
                 n_splits = min(3, len(current_cluster) // min_size)
                 
                 if n_splits > 1:
@@ -316,7 +336,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                         unassigned_mask[idx] = False
         else:
             # Handle oversized cluster with splitting
-            coords_array = np.array(current_coords)
+            coords_array = np.array(current_coords, dtype=np.float64)
             n_splits = min(3, len(current_cluster) // min_size)
             
             if n_splits > 1:
@@ -359,8 +379,8 @@ def assign_clusters_to_branches_vectorized(cluster_info, branch_df):
         return pd.DataFrame()
     
     # Get cluster centroids and branch coordinates
-    cluster_coords = cluster_info[['centroid_lat', 'centroid_lon']].values
-    branch_coords = branch_df[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
+    cluster_coords = cluster_info[['centroid_lat', 'centroid_lon']].values.astype(np.float64)
+    branch_coords = branch_df[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
     
     # Compute distance matrix
     distance_matrix = compute_distance_matrix(cluster_coords, branch_coords)
@@ -398,8 +418,8 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
         return {}, list(customers_to_assign.index)
     
     # Pre-compute distance matrix
-    customer_coords = customers_to_assign[['LAT_NUM', 'LON_NUM']].values
-    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
+    customer_coords = customers_to_assign[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
+    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
     
     distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
     
@@ -479,8 +499,8 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
         current_portfolio_sizes[branch_au] = len(customers)
     
     # Calculate distances from unassigned customers to all identified AUs
-    unassigned_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
-    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
+    unassigned_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
+    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
     
     distance_matrix = compute_distance_matrix(unassigned_coords, branch_coords)
     
@@ -669,7 +689,7 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
                 au_coords.append([branch_coord.iloc[0]['BRANCH_LAT_NUM'], branch_coord.iloc[0]['BRANCH_LON_NUM']])
                 au_list.append(au)
         
-        au_coords = np.array(au_coords)
+        au_coords = np.array(au_coords, dtype=np.float64)
         
         # Track current portfolio sizes
         portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
@@ -678,7 +698,7 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
         
         # Step 2: Process each outlier customer
         for outlier in outlier_customers:
-            customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]])
+            customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]], dtype=np.float64)
             
             # Calculate distances to all AUs
             distances_to_aus = compute_distance_matrix(customer_coord, au_coords)[0]
@@ -770,7 +790,7 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
 
 def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=50):
     """
-    NEW FUNCTION NAME: Rebalance INMARKET portfolios by moving customers from oversized to undersized
+    Rebalance INMARKET portfolios by moving customers from oversized to undersized
     """
     
     # Work with a copy
@@ -793,8 +813,8 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
     branch_coords_dict = {}
     for _, branch in branch_df.iterrows():
         branch_coords_dict[branch['BRANCH_AU']] = {
-            'lat': branch['BRANCH_LAT_NUM'],
-            'lon': branch['BRANCH_LON_NUM']
+            'lat': float(branch['BRANCH_LAT_NUM']),
+            'lon': float(branch['BRANCH_LON_NUM'])
         }
     
     total_moves = 0
@@ -957,7 +977,26 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     proximity_results = []
     final_unassigned_after_proximity = unassigned_customer_indices.copy()
     
-    if unassigned_customer_indices and customer_assignments:
+    if unassigned_customer_indices and inmarket_results:
+        # Create customer_assignments from inmarket_results for proximity check
+        customer_assignments = {}
+        for result in inmarket_results:
+            au = result['ASSIGNED_AU']
+            if au not in customer_assignments:
+                customer_assignments[au] = []
+            
+            # Find the customer index
+            customer_idx = customer_df[
+                (customer_df['ECN'] == result['ECN']) &
+                (customer_df['LAT_NUM'] == result['LAT_NUM']) &
+                (customer_df['LON_NUM'] == result['LON_NUM'])
+            ].index[0]
+            
+            customer_assignments[au].append({
+                'customer_idx': customer_idx,
+                'distance': result['DISTANCE_TO_AU']
+            })
+        
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
         proximity_results, final_unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
@@ -985,7 +1024,7 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
         print("Step 6: Optimizing INMARKET portfolios...")
         result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
     
-    # Step 7: Balance INMARKET portfolios to minimum size (NEW FUNCTION NAME)
+    # Step 7: Balance INMARKET portfolios to minimum size
     if len(result_df) > 0:
         print("Step 7: Balancing INMARKET portfolios to minimum size...")
         result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
@@ -993,19 +1032,22 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     # Print summary
     print(f"\n=== FINAL ENHANCED SUMMARY ===")
     print(f"Total customers processed: {len(customer_df)}")
-    print(f"INMARKET customers assigned: {len(result_df[result_df['TYPE'] == 'INMARKET'])}")
-    print(f"CENTRALIZED customers assigned: {len(result_df[result_df['TYPE'] == 'CENTRALIZED'])}")
+    if len(result_df) > 0:
+        print(f"INMARKET customers assigned: {len(result_df[result_df['TYPE'] == 'INMARKET'])}")
+        print(f"CENTRALIZED customers assigned: {len(result_df[result_df['TYPE'] == 'CENTRALIZED'])}")
     print(f"Final unassigned customers: {len(final_unassigned)}")
     print(f"Total assigned customers: {len(result_df)}")
     
     if len(result_df) > 0:
         # Portfolio size analysis
-        inmarket_sizes = result_df[result_df['TYPE'] == 'INMARKET']['ASSIGNED_AU'].value_counts()
-        print(f"\nINMARKET Portfolio Size Analysis:")
-        print(f"  Portfolios meeting minimum (≥200): {sum(inmarket_sizes >= 200)}")
-        print(f"  Portfolios below minimum (<200): {sum(inmarket_sizes < 200)}")
-        if sum(inmarket_sizes < 200) > 0:
-            print(f"  Smallest portfolio size: {inmarket_sizes.min()}")
+        inmarket_df = result_df[result_df['TYPE'] == 'INMARKET']
+        if len(inmarket_df) > 0:
+            inmarket_sizes = inmarket_df['ASSIGNED_AU'].value_counts()
+            print(f"\nINMARKET Portfolio Size Analysis:")
+            print(f"  Portfolios meeting minimum (≥200): {sum(inmarket_sizes >= 200)}")
+            print(f"  Portfolios below minimum (<200): {sum(inmarket_sizes < 200)}")
+            if sum(inmarket_sizes < 200) > 0:
+                print(f"  Smallest portfolio size: {inmarket_sizes.min()}")
         
         # Centralized cluster analysis
         centralized_df = result_df[result_df['TYPE'] == 'CENTRALIZED']
@@ -1013,7 +1055,7 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
             cluster_radii = []
             for cluster_id in centralized_df['CLUSTER_ID'].unique():
                 cluster_customers = centralized_df[centralized_df['CLUSTER_ID'] == cluster_id]
-                coords = cluster_customers[['LAT_NUM', 'LON_NUM']].values
+                coords = cluster_customers[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
                 radius = calculate_cluster_radius_vectorized(coords)
                 cluster_radii.append(radius)
             
@@ -1042,5 +1084,5 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
 # enhanced_assignments = enhanced_customer_au_assignment_with_balancing(customer_df, branch_df)
 # enhanced_assignments.to_csv('enhanced_customer_au_assignments.csv', index=False)
 
-# Method 2: Call the balancing function separately with the NEW NAME
+# Method 2: Call the balancing function separately
 # result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
