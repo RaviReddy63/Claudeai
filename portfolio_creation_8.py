@@ -768,7 +768,7 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
     
     return optimized_result
 
-def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, search_radius=50):
+def balance_inmarket_portfolios_to_minimum_size(result_df, branch_df, min_size=200, search_radius=50):
     """
     Balance INMARKET portfolios by moving customers from oversized portfolios to undersized ones
     Ensures all portfolios have at least min_size customers while maintaining donor portfolio above min_size
@@ -990,7 +990,7 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     # Step 7: Balance INMARKET portfolios to minimum size
     if len(result_df) > 0:
         print("Step 7: Balancing INMARKET portfolios to minimum size...")
-        result_df = balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200)
+        result_df = balance_inmarket_portfolios_to_minimum_size(result_df, branch_df, min_size=200)
     
     # Print summary
     print(f"\n=== FINAL ENHANCED SUMMARY ===")
@@ -1042,3 +1042,6 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
 # Usage:
 # enhanced_assignments = enhanced_customer_au_assignment_with_balancing(customer_df, branch_df)
 # enhanced_assignments.to_csv('enhanced_customer_au_assignments.csv', index=False)
+
+# Or call the balancing function separately:
+# result_df = balance_inmarket_portfolios_to_minimum_size(result_df, branch_df, min_size=200)
