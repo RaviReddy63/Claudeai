@@ -177,7 +177,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
             # Modified condition
             if len(current_cluster) > 0 and min_size > 0:
                 if len(current_cluster) // min_size < 3:
-                    n_splits = max(1, len(current_cluster) // min_size)
+                    n_splits = np.maximum(1, len(current_cluster) // min_size)
                 else:
                     n_splits = 3
             else:
@@ -302,7 +302,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
             else:
                 # Cluster exceeds radius, try to split
                 coords_array = np.array(current_coords, dtype=np.float64)
-                n_splits = min(3, len(current_cluster) // min_size)
+                n_splits = np.minimum(3, len(current_cluster) // min_size)
                 
                 if n_splits > 1:
                     kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init=10)
@@ -337,7 +337,7 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
         else:
             # Handle oversized cluster with splitting
             coords_array = np.array(current_coords, dtype=np.float64)
-            n_splits = min(3, len(current_cluster) // min_size)
+            n_splits = np.minimum(3, len(current_cluster) // min_size)
             
             if n_splits > 1:
                 kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init=10)
@@ -821,7 +821,7 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
     
     # Process each undersized portfolio
     for undersized_au, current_size in undersized_portfolios.items():
-        needed_customers = min_size - current_size
+        needed_customers = int(min_size - current_size)
         
         if undersized_au not in branch_coords_dict:
             continue
@@ -848,7 +848,7 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
             
             if distance <= search_radius:
                 # Calculate how many customers this donor can spare
-                available_customers = donor_size - min_size
+                available_customers = int(donor_size - min_size)
                 potential_donors.append({
                     'au': donor_au,
                     'distance': distance,
@@ -867,9 +867,9 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
                 break
             
             donor_au = donor_info['au']
-            max_transferable = min(
-                donor_info['available'],
-                needed_customers - customers_acquired
+            max_transferable = np.minimum(
+                int(donor_info['available']),
+                int(needed_customers - customers_acquired)
             )
             
             if max_transferable <= 0:
@@ -895,7 +895,7 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
             donor_distances_to_recipient.sort(key=lambda x: x['distance_to_recipient'])
             
             # Transfer closest customers
-            customers_to_transfer = min(max_transferable, len(donor_distances_to_recipient))
+            customers_to_transfer = np.minimum(int(max_transferable), len(donor_distances_to_recipient))
             
             for i in range(customers_to_transfer):
                 customer_info = donor_distances_to_recipient[i]
