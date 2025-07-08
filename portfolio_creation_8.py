@@ -215,8 +215,6 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
     cluster_id = 0
     final_clusters = []
     
-    print(f"Creating centralized clusters with max radius {max_radius} miles...")
-    
     unassigned_count = np.count_nonzero(unassigned_mask)
     while unassigned_count >= min_size:
         # Find first unassigned customer as seed
@@ -281,12 +279,8 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                 })
                 
                 cluster_id += 1
-                print(f"  Created cluster {cluster_id-1}: {len(current_cluster)} customers, radius: {cluster_radius:.1f} miles")
             else:
                 # Cluster exceeds radius, try to split
-                print(f"  Cluster exceeds radius ({cluster_radius:.1f} > {max_radius}), attempting to split...")
-                
-                # Try K-means splitting
                 coords_array = np.array(current_coords)
                 n_splits = min(3, len(current_cluster) // min_size)
                 
@@ -315,7 +309,6 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                                     'centroid_lon': np.mean(sub_coords[:, 1])
                                 })
                                 cluster_id += 1
-                                print(f"    Split cluster {cluster_id-1}: {len(sub_indices)} customers, radius: {sub_radius:.1f} miles")
                 
                 # Mark remaining as unassigned for this iteration
                 for idx in current_cluster:
@@ -351,15 +344,12 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
                                 'centroid_lon': np.mean(sub_coords[:, 1])
                             })
                             cluster_id += 1
-                            print(f"  Split large cluster {cluster_id-1}: {len(sub_indices)} customers, radius: {sub_radius:.1f} miles")
             
             # Mark all as unassigned for this iteration
             for idx in current_cluster:
                 unassigned_mask[idx] = False
         
         unassigned_count = np.count_nonzero(unassigned_mask)
-    
-    print(f"Centralized clustering complete: {len(final_clusters)} clusters created")
     
     return customers_clean, pd.DataFrame(final_clusters)
 
@@ -402,11 +392,7 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     identified_branches = cluster_assignments['assigned_branch'].unique()
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
     
-    print(f"Identified branches: {list(identified_branches)}")
-    print(f"Available branch coordinates: {len(identified_branch_coords)}")
-    
     customers_to_assign = clustered_customers[clustered_customers['cluster'] != -1].copy()
-    print(f"Customers to assign: {len(customers_to_assign)}")
     
     if len(customers_to_assign) == 0 or len(identified_branch_coords) == 0:
         return {}, list(customers_to_assign.index)
@@ -415,7 +401,6 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     customer_coords = customers_to_assign[['LAT_NUM', 'LON_NUM']].values
     branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values
     
-    print(f"Computing distance matrix: {len(customer_coords)} x {len(branch_coords)}")
     distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
     
     # Apply distance constraint
@@ -429,8 +414,6 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     customer_assignments = {branch_au: [] for branch_au in branch_aus}
     unassigned_customers = []
     
-    print("Applying greedy assignment...")
-    
     # Create list of (customer_idx, branch_idx, distance) sorted by distance
     assignment_candidates = []
     for i, customer_idx in enumerate(customer_indices):
@@ -441,8 +424,6 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     
     # Sort by distance (greedy: assign closest first)
     assignment_candidates.sort(key=lambda x: x[4])
-    
-    print(f"Processing {len(assignment_candidates)} possible assignments...")
     
     # Assign customers greedily
     assigned_customers = set()
@@ -477,15 +458,6 @@ def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments
     for branch_au in customer_assignments:
         customer_assignments[branch_au].sort(key=lambda x: x['distance'])
     
-    print(f"Greedy assignment complete:")
-    print(f"  - Unassigned customers: {len(unassigned_customers)}")
-    
-    # Print assignment summary
-    for branch_au, customers in customer_assignments.items():
-        if customers:
-            distances = [c['distance'] for c in customers]
-            print(f"  - Branch {branch_au}: {len(customers)} customers, avg distance: {np.mean(distances):.2f} miles")
-    
     return customer_assignments, unassigned_customers
 
 def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, customer_assignments, branch_df, proximity_threshold=20, max_portfolio_size=250):
@@ -493,8 +465,6 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     Check if unassigned customers are within proximity of identified AUs
     Add them to existing portfolios up to max_portfolio_size
     """
-    print(f"\nChecking proximity for {len(unassigned_customers_df)} unassigned customers...")
-    print(f"Proximity threshold: {proximity_threshold} miles, Max portfolio size: {max_portfolio_size}")
     
     if len(unassigned_customers_df) == 0 or not customer_assignments:
         return [], list(unassigned_customers_df.index), customer_assignments
@@ -503,16 +473,10 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     identified_aus = list(customer_assignments.keys())
     identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_aus)].copy()
     
-    print(f"Checking proximity to {len(identified_aus)} identified AUs: {identified_aus}")
-    
     # Pre-compute current portfolio sizes
     current_portfolio_sizes = {}
     for branch_au, customers in customer_assignments.items():
         current_portfolio_sizes[branch_au] = len(customers)
-    
-    print("Current portfolio sizes:")
-    for branch_au, size in current_portfolio_sizes.items():
-        print(f"  - {branch_au}: {size} customers")
     
     # Calculate distances from unassigned customers to all identified AUs
     unassigned_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values
@@ -575,18 +539,9 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
         if not assigned:
             remaining_unassigned.append(customer_idx)
     
-    print(f"\nProximity assignment results:")
-    print(f"  - Customers assigned via proximity: {len(proximity_results)}")
-    print(f"  - Customers still unassigned: {len(remaining_unassigned)}")
-    
     # Sort customers within each branch by distance
     for branch_au in updated_customer_assignments:
         updated_customer_assignments[branch_au].sort(key=lambda x: x['distance'])
-    
-    # Print updated portfolio sizes
-    print("\nUpdated portfolio sizes after proximity assignment:")
-    for branch_au, customers in updated_customer_assignments.items():
-        print(f"  - {branch_au}: {len(customers)} customers")
     
     return proximity_results, remaining_unassigned, updated_customer_assignments
 
@@ -595,8 +550,6 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
     """
     Create centralized clusters WITH radius constraint and assign to branches
     """
-    print(f"\nCreating centralized clusters with radius constraint for {len(unassigned_customers_df)} customers...")
-    print(f"Cluster constraints: min_size={min_size}, max_size={max_size}, max_radius={max_radius} miles")
     
     if len(unassigned_customers_df) == 0:
         return [], []
@@ -610,14 +563,6 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
     final_unassigned = []
     
     if len(centralized_cluster_info) > 0:
-        print(f"Created {len(centralized_cluster_info)} centralized clusters with radius constraint")
-        
-        # Print cluster statistics
-        print("\nCentralized Cluster Statistics (with radius constraint):")
-        for _, cluster in centralized_cluster_info.iterrows():
-            print(f"  Cluster {cluster['cluster_id']}: {cluster['size']} customers, "
-                  f"radius: {cluster['radius']:.1f} miles")
-        
         # Step 2: Assign clusters to branches
         cluster_assignments = assign_clusters_to_branches_vectorized(
             centralized_cluster_info, branch_df
@@ -668,12 +613,7 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
         final_unassigned = list(unassigned_centralized.index)
         
     else:
-        print("No centralized clusters could be created with radius constraint")
         final_unassigned = list(unassigned_customers_df.index)
-    
-    print(f"\nCentralized assignment results (with radius constraint):")
-    print(f"  - Customers in centralized clusters: {len(centralized_results)}")
-    print(f"  - Remaining unassigned: {len(final_unassigned)}")
     
     return centralized_results, final_unassigned
 
@@ -681,14 +621,12 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
     """
     Repeatedly optimize INMARKET portfolios until no more beneficial reassignments can be made
     """
-    print(f"\nOptimizing INMARKET portfolios until convergence...")
     
     optimized_result = result_df.copy()
     iteration = 0
     
     while True:
         iteration += 1
-        print(f"\n--- Optimization Iteration {iteration} ---")
         
         inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
         if len(inmarket_customers) == 0:
@@ -718,10 +656,7 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
                     })
         
         if not outlier_customers:
-            print("No outlier customers found - optimization converged")
             break
-        
-        print(f"Found {len(outlier_customers)} outlier customers to evaluate")
         
         # Get all INMARKET AUs and their coordinates
         inmarket_aus = inmarket_customers['ASSIGNED_AU'].unique()
@@ -827,14 +762,10 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
                 # Update inmarket_customers for subsequent iterations within this loop
                 inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
         
-        print(f"Iteration {iteration}: {iteration_improvements} customers reassigned")
-        
         # If no improvements were made in this iteration, we've converged
         if iteration_improvements == 0:
-            print("No improvements found - optimization converged")
             break
     
-    print(f"Optimization complete after {iteration} iterations")
     return optimized_result
 
 def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, search_radius=50):
@@ -842,7 +773,6 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
     Balance INMARKET portfolios by moving customers from oversized portfolios to undersized ones
     Ensures all portfolios have at least min_size customers while maintaining donor portfolio above min_size
     """
-    print(f"\nBalancing INMARKET portfolios to minimum size of {min_size}...")
     
     # Work with a copy
     balanced_result = result_df.copy()
@@ -850,28 +780,16 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
     # Get INMARKET portfolios and their sizes
     inmarket_customers = balanced_result[balanced_result['TYPE'] == 'INMARKET'].copy()
     if len(inmarket_customers) == 0:
-        print("No INMARKET customers found")
         return balanced_result
     
     portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
-    
-    print("Current INMARKET portfolio sizes:")
-    for au, size in sorted(portfolio_sizes.items()):
-        print(f"  AU {au}: {size} customers")
     
     # Identify undersized portfolios
     undersized_portfolios = {au: size for au, size in portfolio_sizes.items() if size < min_size}
     oversized_portfolios = {au: size for au, size in portfolio_sizes.items() if size > min_size}
     
     if not undersized_portfolios:
-        print("All INMARKET portfolios already meet minimum size requirement")
         return balanced_result
-    
-    print(f"\nUndersized portfolios: {len(undersized_portfolios)}")
-    for au, size in undersized_portfolios.items():
-        print(f"  AU {au}: {size} customers (needs {min_size - size} more)")
-    
-    print(f"\nOversized portfolios available for balancing: {len(oversized_portfolios)}")
     
     # Get branch coordinates for distance calculations
     branch_coords_dict = {}
@@ -886,10 +804,8 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
     # Process each undersized portfolio
     for undersized_au, current_size in undersized_portfolios.items():
         needed_customers = min_size - current_size
-        print(f"\nProcessing AU {undersized_au} (needs {needed_customers} customers)...")
         
         if undersized_au not in branch_coords_dict:
-            print(f"  Warning: No coordinates found for AU {undersized_au}")
             continue
         
         undersized_coords = branch_coords_dict[undersized_au]
@@ -925,8 +841,6 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
         # Sort donors by distance (closest first)
         potential_donors.sort(key=lambda x: x['distance'])
         
-        print(f"  Found {len(potential_donors)} potential donor portfolios within {search_radius} miles")
-        
         customers_acquired = 0
         
         # Try to get customers from donors
@@ -942,8 +856,6 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
             
             if max_transferable <= 0:
                 continue
-            
-            print(f"    Checking donor AU {donor_au} (distance: {donor_info['distance']:.1f} miles, available: {max_transferable})")
             
             # Get customers from donor portfolio, sorted by distance to recipient
             donor_customers = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == donor_au].copy()
@@ -985,19 +897,6 @@ def balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200, s
                 # Update inmarket_customers for subsequent operations
                 inmarket_customers.loc[customer_idx, 'ASSIGNED_AU'] = undersized_au
                 inmarket_customers.loc[customer_idx, 'DISTANCE_TO_AU'] = customer_info['distance_to_recipient']
-            
-            print(f"      Transferred {customers_to_transfer} customers from AU {donor_au}")
-        
-        print(f"  AU {undersized_au}: Acquired {customers_acquired} customers (target was {needed_customers})")
-    
-    print(f"\nBalancing complete: {total_moves} customers moved")
-    
-    # Print final sizes
-    final_portfolio_sizes = balanced_result[balanced_result['TYPE'] == 'INMARKET']['ASSIGNED_AU'].value_counts().to_dict()
-    print("\nFinal INMARKET portfolio sizes:")
-    for au, size in sorted(final_portfolio_sizes.items()):
-        status = "✓" if size >= min_size else "⚠"
-        print(f"  AU {au}: {size} customers {status}")
     
     return balanced_result
 
@@ -1085,10 +984,12 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     
     # Step 6: Optimize INMARKET portfolios until convergence
     if len(result_df) > 0:
+        print("Step 6: Optimizing INMARKET portfolios...")
         result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
     
-    # Step 7: NEW - Balance INMARKET portfolios to minimum size
+    # Step 7: Balance INMARKET portfolios to minimum size
     if len(result_df) > 0:
+        print("Step 7: Balancing INMARKET portfolios to minimum size...")
         result_df = balance_inmarket_portfolios_to_minimum(result_df, branch_df, min_size=200)
     
     # Print summary
