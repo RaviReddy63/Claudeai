@@ -994,8 +994,11 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
         # Sort by distance (closest first)
         candidate_data.sort(key=lambda x: x['distance'])
         
-        # Assign closest customers up to needed amount
-        customers_to_assign = min(needed_customers, len(candidate_data))
+        # Fixed: Replace min() with if statement
+        if needed_customers <= len(candidate_data):
+            customers_to_assign = needed_customers
+        else:
+            customers_to_assign = len(candidate_data)
         
         for i in range(customers_to_assign):
             candidate = candidate_data[i]
