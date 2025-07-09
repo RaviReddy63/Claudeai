@@ -918,6 +918,118 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
     
     return balanced_result
 
+def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_indices, customer_df, branch_df, min_size=200, max_radius=40):
+    """
+    Fill undersized INMARKET portfolios by finding unassigned customers within radius
+    """
+    
+    if len(unassigned_customer_indices) == 0:
+        return result_df, unassigned_customer_indices
+    
+    # Work with a copy
+    updated_result = result_df.copy()
+    remaining_unassigned = unassigned_customer_indices.copy()
+    
+    # Get INMARKET portfolios and their sizes
+    inmarket_customers = updated_result[updated_result['TYPE'] == 'INMARKET'].copy()
+    if len(inmarket_customers) == 0:
+        return updated_result, remaining_unassigned
+    
+    portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
+    
+    # Identify undersized portfolios
+    undersized_portfolios = {au: size for au, size in portfolio_sizes.items() if size < min_size}
+    
+    if not undersized_portfolios:
+        return updated_result, remaining_unassigned
+    
+    print(f"Found {len(undersized_portfolios)} undersized INMARKET portfolios to fill from unassigned customers")
+    
+    # Get unassigned customers data
+    unassigned_customers_df = customer_df.loc[remaining_unassigned]
+    if len(unassigned_customers_df) == 0:
+        return updated_result, remaining_unassigned
+    
+    # Get branch coordinates
+    branch_coords_dict = {}
+    for _, branch in branch_df.iterrows():
+        branch_coords_dict[branch['BRANCH_AU']] = {
+            'lat': float(branch['BRANCH_LAT_NUM']),
+            'lon': float(branch['BRANCH_LON_NUM'])
+        }
+    
+    total_assigned_from_unassigned = 0
+    
+    # Process each undersized portfolio
+    for undersized_au, current_size in undersized_portfolios.items():
+        needed_customers = int(min_size - current_size)
+        
+        if undersized_au not in branch_coords_dict or needed_customers <= 0:
+            continue
+        
+        undersized_coords = branch_coords_dict[undersized_au]
+        
+        # Calculate distances from all unassigned customers to this AU
+        unassigned_coords = unassigned_customers_df[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
+        au_coord = np.array([[undersized_coords['lat'], undersized_coords['lon']]], dtype=np.float64)
+        
+        distances_to_au = compute_distance_matrix(unassigned_coords, au_coord)[:, 0]
+        
+        # Find unassigned customers within max_radius
+        within_radius_mask = distances_to_au <= max_radius
+        
+        if not np.any(within_radius_mask):
+            continue
+        
+        # Get candidates within radius and sort by distance
+        candidate_data = []
+        for i, (customer_idx, customer_data) in enumerate(unassigned_customers_df.iterrows()):
+            if within_radius_mask[i]:
+                candidate_data.append({
+                    'customer_idx': customer_idx,
+                    'distance': distances_to_au[i],
+                    'customer_data': customer_data
+                })
+        
+        # Sort by distance (closest first)
+        candidate_data.sort(key=lambda x: x['distance'])
+        
+        # Assign closest customers up to needed amount
+        customers_to_assign = min(needed_customers, len(candidate_data))
+        
+        for i in range(customers_to_assign):
+            candidate = candidate_data[i]
+            customer_idx = candidate['customer_idx']
+            distance = candidate['distance']
+            customer_data = candidate['customer_data']
+            
+            # Add customer to result_df
+            new_assignment = {
+                'ECN': customer_data['ECN'],
+                'BILLINGCITY': customer_data['BILLINGCITY'],
+                'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                'LAT_NUM': customer_data['LAT_NUM'],
+                'LON_NUM': customer_data['LON_NUM'],
+                'ASSIGNED_AU': undersized_au,
+                'DISTANCE_TO_AU': distance,
+                'TYPE': 'INMARKET'
+            }
+            
+            # Add to dataframe
+            updated_result = pd.concat([updated_result, pd.DataFrame([new_assignment])], ignore_index=True)
+            
+            # Remove from unassigned list
+            if customer_idx in remaining_unassigned:
+                remaining_unassigned.remove(customer_idx)
+            
+            total_assigned_from_unassigned += 1
+        
+        print(f"Assigned {customers_to_assign} unassigned customers to AU {undersized_au} (within {max_radius} miles)")
+    
+    print(f"Total customers assigned from unassigned to undersized portfolios: {total_assigned_from_unassigned}")
+    
+    return updated_result, remaining_unassigned
+
 def enhanced_customer_au_assignment_with_two_inmarket_iterations(customer_df, branch_df):
     """
     Enhanced main function with two INMARKET iterations and centralized portfolios
@@ -1057,13 +1169,33 @@ def enhanced_customer_au_assignment_with_two_inmarket_iterations(customer_df, br
         else:
             unassigned_after_second_inmarket = unassigned_after_proximity.copy()
     
-    print(f"Total unassigned customers after second INMARKET: {len(unassigned_after_second_inmarket)}")
+    # Combine all results initially (before balancing and filling)
+    all_results = inmarket_results + proximity_results + second_inmarket_results
+    result_df = pd.DataFrame(all_results)
     
-    # Step 6: Create CENTRALIZED clusters WITH radius constraint
+    # Step 6: Optimize INMARKET portfolios until convergence
+    if len(result_df) > 0:
+        print("Step 6: Optimizing INMARKET portfolios...")
+        result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
+    
+    # Step 7: Balance INMARKET portfolios to minimum size (move customers between portfolios)
+    if len(result_df) > 0:
+        print("Step 7: Balancing INMARKET portfolios by moving customers between them...")
+        result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
+    
+    # Step 8: Fill remaining undersized portfolios from unassigned customers (up to 40 miles)
+    if len(result_df) > 0 and unassigned_after_second_inmarket:
+        print("Step 8: Filling undersized INMARKET portfolios from unassigned customers (up to 40 miles)...")
+        result_df, unassigned_after_second_inmarket = fill_undersized_portfolios_from_unassigned(
+            result_df, unassigned_after_second_inmarket, customer_df, branch_df, min_size=200, max_radius=40
+        )
+    
+    # Step 9: Create CENTRALIZED clusters WITH radius constraint
     centralized_results = []
     final_unassigned = []
     
     if unassigned_after_second_inmarket:
+        print("Step 9: Creating CENTRALIZED clusters...")
         remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
         centralized_results, final_unassigned = create_centralized_clusters_with_radius_and_assign(
@@ -1071,18 +1203,9 @@ def enhanced_customer_au_assignment_with_two_inmarket_iterations(customer_df, br
         )
     
     # Combine all results
-    all_results = inmarket_results + proximity_results + second_inmarket_results + centralized_results
-    result_df = pd.DataFrame(all_results)
-    
-    # Step 7: Optimize INMARKET portfolios until convergence
-    if len(result_df) > 0:
-        print("Step 7: Optimizing INMARKET portfolios...")
-        result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
-    
-    # Step 8: Balance INMARKET portfolios to minimum size
-    if len(result_df) > 0:
-        print("Step 8: Balancing INMARKET portfolios to minimum size...")
-        result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
+    all_results = centralized_results
+    if len(all_results) > 0:
+        result_df = pd.concat([result_df, pd.DataFrame(all_results)], ignore_index=True)
     
     # Print summary
     print(f"\n=== FINAL SUMMARY WITH TWO INMARKET ITERATIONS ===")
