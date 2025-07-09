@@ -199,6 +199,137 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
     
     return customers_clean, pd.DataFrame(final_clusters)
 
+def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=50):
+    """
+    Rebalance INMARKET portfolios by moving customers from oversized to undersized
+    """
+    
+    # Work with a copy
+    balanced_result = result_df.copy()
+    
+    # Get INMARKET portfolios and their sizes
+    inmarket_customers = balanced_result[balanced_result['TYPE'] == 'INMARKET'].copy()
+    if len(inmarket_customers) == 0:
+        return balanced_result
+    
+    portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
+    
+    # Identify undersized portfolios
+    undersized_portfolios = {au: size for au, size in portfolio_sizes.items() if size < min_size}
+    
+    if not undersized_portfolios:
+        return balanced_result
+    
+    # Get branch coordinates for distance calculations
+    branch_coords_dict = {}
+    for _, branch in branch_df.iterrows():
+        branch_coords_dict[branch['BRANCH_AU']] = {
+            'lat': float(branch['BRANCH_LAT_NUM']),
+            'lon': float(branch['BRANCH_LON_NUM'])
+        }
+    
+    total_moves = 0
+    
+    # Process each undersized portfolio
+    for undersized_au, current_size in undersized_portfolios.items():
+        needed_customers = int(min_size - current_size)
+        
+        if undersized_au not in branch_coords_dict:
+            continue
+        
+        undersized_coords = branch_coords_dict[undersized_au]
+        
+        # Find potential donor portfolios within search radius
+        potential_donors = []
+        
+        for donor_au, donor_size in portfolio_sizes.items():
+            if donor_au == undersized_au or donor_size <= min_size:
+                continue
+            
+            if donor_au not in branch_coords_dict:
+                continue
+            
+            donor_coords = branch_coords_dict[donor_au]
+            
+            # Calculate distance between branches
+            distance = haversine_distance_vectorized(
+                undersized_coords['lat'], undersized_coords['lon'],
+                donor_coords['lat'], donor_coords['lon']
+            )
+            
+            if distance <= search_radius:
+                # Calculate how many customers this donor can spare
+                available_customers = int(donor_size - min_size)
+                potential_donors.append({
+                    'au': donor_au,
+                    'distance': distance,
+                    'available': available_customers,
+                    'current_size': donor_size
+                })
+        
+        # Sort donors by distance (closest first)
+        potential_donors.sort(key=lambda x: x['distance'])
+        
+        customers_acquired = 0
+        
+        # Try to get customers from donors
+        for donor_info in potential_donors:
+            if customers_acquired >= needed_customers:
+                break
+            
+            donor_au = donor_info['au']
+            max_transferable = np.minimum(
+                int(donor_info['available']),
+                int(needed_customers - customers_acquired)
+            )
+            
+            if max_transferable <= 0:
+                continue
+            
+            # Get customers from donor portfolio, sorted by distance to recipient
+            donor_customers = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == donor_au].copy()
+            
+            # Calculate distances from donor customers to undersized AU
+            donor_distances_to_recipient = []
+            for idx, customer in donor_customers.iterrows():
+                distance_to_recipient = haversine_distance_vectorized(
+                    customer['LAT_NUM'], customer['LON_NUM'],
+                    undersized_coords['lat'], undersized_coords['lon']
+                )
+                donor_distances_to_recipient.append({
+                    'customer_idx': idx,
+                    'distance_to_recipient': distance_to_recipient,
+                    'current_distance': customer['DISTANCE_TO_AU']
+                })
+            
+            # Sort by distance to recipient (closest first)
+            donor_distances_to_recipient.sort(key=lambda x: x['distance_to_recipient'])
+            
+            # Transfer closest customers
+            customers_to_transfer = np.minimum(int(max_transferable), len(donor_distances_to_recipient))
+            
+            for i in range(customers_to_transfer):
+                customer_info = donor_distances_to_recipient[i]
+                customer_idx = customer_info['customer_idx']
+                
+                # Update assignment
+                balanced_result.loc[customer_idx, 'ASSIGNED_AU'] = undersized_au
+                balanced_result.loc[customer_idx, 'DISTANCE_TO_AU'] = customer_info['distance_to_recipient']
+                
+                # Update portfolio sizes
+                portfolio_sizes[donor_au] -= 1
+                portfolio_sizes[undersized_au] = portfolio_sizes.get(undersized_au, 0) + 1
+                
+                customers_acquired += 1
+                total_moves += 1
+                
+                # Update inmarket_customers for subsequent operations
+                inmarket_customers.loc[customer_idx, 'ASSIGNED_AU'] = undersized_au
+                inmarket_customers.loc[customer_idx, 'DISTANCE_TO_AU'] = customer_info['distance_to_recipient']
+    
+    print(f"Rebalancing completed: {total_moves} customers moved")
+    return balanced_result
+
 def constrained_clustering_no_radius(customer_df, min_size=200, max_size=250):
     """Create clusters with size constraints but no radius limit for centralized portfolios"""
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
@@ -662,7 +793,35 @@ def customer_au_assignment(customer_df, branch_df):
     else:
         final_unassigned = []
     
-    # Step 6: Create centralized portfolios from remaining customers
+    # Combine INMARKET and proximity results for rebalancing
+    inmarket_and_proximity_results = inmarket_results + proximity_results + extended_inmarket_results
+    inmarket_df = pd.DataFrame(inmarket_and_proximity_results)
+    
+    # Step 6: Rebalance INMARKET portfolios to meet minimum size requirements
+    if len(inmarket_df) > 0:
+        print("Step 6: Rebalancing INMARKET portfolios to minimum size...")
+        inmarket_df = rebalance_portfolio_sizes(inmarket_df, branch_df, min_size=200)
+        
+        # Update the lists with rebalanced assignments
+        inmarket_and_proximity_results = inmarket_df.to_dict('records')
+        
+        # Update final_unassigned - customers that were moved during rebalancing are no longer unassigned
+        assigned_customer_indices = set()
+        for result in inmarket_and_proximity_results:
+            # Find customer index for this result
+            customer_idx = customer_df[
+                (customer_df['ECN'] == result['ECN']) &
+                (customer_df['LAT_NUM'] == result['LAT_NUM']) &
+                (customer_df['LON_NUM'] == result['LON_NUM'])
+            ].index[0]
+            assigned_customer_indices.add(customer_idx)
+        
+        # Remove assigned customers from final_unassigned
+        final_unassigned = [idx for idx in final_unassigned if idx not in assigned_customer_indices]
+    else:
+        inmarket_and_proximity_results = []
+    
+    # Step 7: Create centralized portfolios from remaining customers
     centralized_results = []
     if final_unassigned:
         print(f"Step 6: Creating centralized portfolios from {len(final_unassigned)} remaining customers...")
