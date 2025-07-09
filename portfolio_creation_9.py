@@ -569,92 +569,154 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     
     return proximity_results, remaining_unassigned, updated_customer_assignments
 
-def optimize_inmarket_portfolios(result_df, branch_df, k_neighbors=3):
-    """Optimize INMARKET portfolios by reassigning outlier customers"""
+def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neighbors=3):
+    """
+    Repeatedly optimize INMARKET portfolios until no more beneficial reassignments can be made
+    """
     
     optimized_result = result_df.copy()
+    iteration = 0
     
-    inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
-    if len(inmarket_customers) == 0:
-        return optimized_result
-    
-    # Group customers by assigned AU
-    portfolio_groups = inmarket_customers.groupby('ASSIGNED_AU')
-    outlier_customers = []
-    
-    # Identify outlier customers (3x median distance)
-    for au, group in portfolio_groups:
-        if len(group) <= 1:
-            continue
-            
-        distances = group['DISTANCE_TO_AU'].values
-        median_distance = np.median(distances)
-        threshold = 3 * median_distance
+    while True:
+        iteration += 1
         
-        outliers = group[group['DISTANCE_TO_AU'] > threshold]
-        if len(outliers) > 0:
-            for idx, customer in outliers.iterrows():
-                outlier_customers.append({
-                    'customer_idx': idx,
-                    'current_au': au,
-                    'current_distance': customer['DISTANCE_TO_AU'],
-                    'customer_data': customer
-                })
-    
-    if not outlier_customers:
-        return optimized_result
-    
-    # Get all INMARKET AUs and their coordinates
-    inmarket_aus = inmarket_customers['ASSIGNED_AU'].unique()
-    au_coords = []
-    au_list = []
-    
-    for au in inmarket_aus:
-        branch_coord = branch_df[branch_df['BRANCH_AU'] == au]
-        if len(branch_coord) > 0:
-            au_coords.append([branch_coord.iloc[0]['BRANCH_LAT_NUM'], branch_coord.iloc[0]['BRANCH_LON_NUM']])
-            au_list.append(au)
-    
-    au_coords = np.array(au_coords, dtype=np.float64)
-    
-    # Track current portfolio sizes
-    portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
-    
-    # Process each outlier customer
-    for outlier in outlier_customers:
-        customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]], dtype=np.float64)
+        inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        if len(inmarket_customers) == 0:
+            break
         
-        # Calculate distances to all AUs
-        distances_to_aus = compute_distance_matrix(customer_coord, au_coords)[0]
+        # Group customers by assigned AU
+        portfolio_groups = inmarket_customers.groupby('ASSIGNED_AU')
+        outlier_customers = []
         
-        # Find k nearest AUs
-        nearest_indices = np.argsort(distances_to_aus)[:k_neighbors]
-        
-        best_improvement = 0
-        best_target_au = None
-        best_target_distance = None
-        
-        for idx in nearest_indices:
-            target_au = au_list[idx]
-            target_distance = distances_to_aus[idx]
-            
-            if target_au == outlier['current_au']:
+        # Step 1: Identify outlier customers (3x median distance)
+        for au, group in portfolio_groups:
+            if len(group) <= 1:
                 continue
+                
+            distances = group['DISTANCE_TO_AU'].values
+            median_distance = np.median(distances)
+            threshold = 3 * median_distance
             
-            improvement = outlier['current_distance'] - target_distance
-            
-            if improvement > best_improvement and portfolio_sizes.get(target_au, 0) < 250:
-                best_improvement = improvement
-                best_target_au = target_au
-                best_target_distance = target_distance
+            outliers = group[group['DISTANCE_TO_AU'] > threshold]
+            if len(outliers) > 0:
+                for idx, customer in outliers.iterrows():
+                    outlier_customers.append({
+                        'customer_idx': idx,
+                        'current_au': au,
+                        'current_distance': customer['DISTANCE_TO_AU'],
+                        'customer_data': customer
+                    })
         
-        # Execute reassignment if beneficial
-        if best_target_au and best_improvement > 0:
-            optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_target_au
-            optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_target_distance
+        if not outlier_customers:
+            break
+        
+        # Get all INMARKET AUs and their coordinates
+        inmarket_aus = inmarket_customers['ASSIGNED_AU'].unique()
+        au_coords = []
+        au_list = []
+        
+        for au in inmarket_aus:
+            branch_coord = branch_df[branch_df['BRANCH_AU'] == au]
+            if len(branch_coord) > 0:
+                au_coords.append([branch_coord.iloc[0]['BRANCH_LAT_NUM'], branch_coord.iloc[0]['BRANCH_LON_NUM']])
+                au_list.append(au)
+        
+        au_coords = np.array(au_coords, dtype=np.float64)
+        
+        # Track current portfolio sizes
+        portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
+        
+        iteration_improvements = 0
+        
+        # Step 2: Process each outlier customer
+        for outlier in outlier_customers:
+            customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]], dtype=np.float64)
             
-            portfolio_sizes[outlier['current_au']] -= 1
-            portfolio_sizes[best_target_au] = portfolio_sizes.get(best_target_au, 0) + 1
+            # Calculate distances to all AUs
+            distances_to_aus = compute_distance_matrix(customer_coord, au_coords)[0]
+            
+            # Find k nearest AUs
+            nearest_indices = np.argsort(distances_to_aus)[:k_neighbors]
+            
+            best_reassignment = None
+            best_improvement = 0
+            
+            for idx in nearest_indices:
+                target_au = au_list[idx]
+                target_distance = distances_to_aus[idx]
+                
+                if target_au == outlier['current_au']:
+                    continue
+                
+                current_improvement = outlier['current_distance'] - target_distance
+                
+                if current_improvement <= 0:
+                    continue
+                
+                # Check if target portfolio has capacity
+                if portfolio_sizes.get(target_au, 0) < 250:
+                    if current_improvement > best_improvement:
+                        best_reassignment = {
+                            'type': 'direct',
+                            'target_au': target_au,
+                            'target_distance': target_distance,
+                            'improvement': current_improvement
+                        }
+                        best_improvement = current_improvement
+                
+                # Check for trade opportunity
+                elif portfolio_sizes.get(target_au, 0) == 250:
+                    target_portfolio = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == target_au]
+                    target_farthest_idx = target_portfolio['DISTANCE_TO_AU'].idxmax()
+                    target_farthest = target_portfolio.loc[target_farthest_idx]
+                    
+                    # Calculate trade benefit
+                    current_au_coord = branch_df[branch_df['BRANCH_AU'] == outlier['current_au']]
+                    if len(current_au_coord) > 0:
+                        trade_distance = haversine_distance_vectorized(
+                            target_farthest['LAT_NUM'], target_farthest['LON_NUM'],
+                            current_au_coord.iloc[0]['BRANCH_LAT_NUM'], current_au_coord.iloc[0]['BRANCH_LON_NUM']
+                        )
+                        
+                        total_trade_improvement = (outlier['current_distance'] - target_distance) + (target_farthest['DISTANCE_TO_AU'] - trade_distance)
+                        
+                        if total_trade_improvement > best_improvement:
+                            best_reassignment = {
+                                'type': 'trade',
+                                'target_au': target_au,
+                                'target_distance': target_distance,
+                                'trade_customer_idx': target_farthest_idx,
+                                'trade_distance': trade_distance,
+                                'improvement': total_trade_improvement
+                            }
+                            best_improvement = total_trade_improvement
+            
+            # Execute best reassignment
+            if best_reassignment and best_improvement > 0:
+                if best_reassignment['type'] == 'direct':
+                    # Direct reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    portfolio_sizes[outlier['current_au']] -= 1
+                    portfolio_sizes[best_reassignment['target_au']] = portfolio_sizes.get(best_reassignment['target_au'], 0) + 1
+                    
+                elif best_reassignment['type'] == 'trade':
+                    # Trade reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'ASSIGNED_AU'] = outlier['current_au']
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['trade_distance']
+                
+                iteration_improvements += 1
+                
+                # Update inmarket_customers for subsequent iterations within this loop
+                inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        
+        # If no improvements were made in this iteration, we've converged
+        if iteration_improvements == 0:
+            break
     
     return optimized_result
 
@@ -795,18 +857,16 @@ def customer_au_assignment(customer_df, branch_df):
     
     # Combine INMARKET and proximity results for rebalancing
     inmarket_and_proximity_results = inmarket_results + proximity_results + extended_inmarket_results
-    inmarket_df = pd.DataFrame(inmarket_and_proximity_results)
     
     # Step 6: Rebalance INMARKET portfolios to meet minimum size requirements
-    if len(inmarket_df) > 0:
+    if inmarket_and_proximity_results:
         print("Step 6: Rebalancing INMARKET portfolios to minimum size...")
-        inmarket_df = rebalance_portfolio_sizes(inmarket_df, branch_df, min_size=200)
         
-        # Update the lists with rebalanced assignments
-        inmarket_and_proximity_results = inmarket_df.to_dict('records')
+        # Create DataFrame with proper indexing
+        inmarket_df = pd.DataFrame(inmarket_and_proximity_results)
         
-        # Update final_unassigned - customers that were moved during rebalancing are no longer unassigned
-        assigned_customer_indices = set()
+        # Add customer indices to the DataFrame for proper tracking
+        customer_indices = []
         for result in inmarket_and_proximity_results:
             # Find customer index for this result
             customer_idx = customer_df[
@@ -814,10 +874,20 @@ def customer_au_assignment(customer_df, branch_df):
                 (customer_df['LAT_NUM'] == result['LAT_NUM']) &
                 (customer_df['LON_NUM'] == result['LON_NUM'])
             ].index[0]
-            assigned_customer_indices.add(customer_idx)
+            customer_indices.append(customer_idx)
         
-        # Remove assigned customers from final_unassigned
-        final_unassigned = [idx for idx in final_unassigned if idx not in assigned_customer_indices]
+        # Set proper index on the DataFrame
+        inmarket_df.index = customer_indices
+        
+        # Perform rebalancing
+        inmarket_df = rebalance_portfolio_sizes(inmarket_df, branch_df, min_size=200)
+        
+        # Update the results with rebalanced assignments
+        inmarket_and_proximity_results = inmarket_df.to_dict('records')
+        
+        # Update final_unassigned - remove customers that are now assigned through rebalancing
+        assigned_indices = set(inmarket_df.index)
+        final_unassigned = [idx for idx in final_unassigned if idx not in assigned_indices]
     else:
         inmarket_and_proximity_results = []
     
