@@ -918,34 +918,36 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
     
     return balanced_result
 
-def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
+def enhanced_customer_au_assignment_with_two_inmarket_iterations(customer_df, branch_df):
     """
-    Enhanced main function with portfolio balancing and centralized radius constraint
+    Enhanced main function with two INMARKET iterations and centralized portfolios
     """
     
     print(f"Starting enhanced assignment with {len(customer_df)} customers and {len(branch_df)} branches")
     
-    # Step 1: Create INMARKET clusters (with radius constraint, max_size=225)
-    print("Step 1: Creating INMARKET clusters...")
-    clustered_customers, cluster_info = constrained_clustering_optimized(customer_df)
+    # Step 1: Create first INMARKET clusters (20-mile radius, max_size=225)
+    print("Step 1: Creating first INMARKET clusters (20-mile radius)...")
+    clustered_customers, cluster_info = constrained_clustering_optimized(
+        customer_df, min_size=200, max_size=225, max_radius=20
+    )
     
     inmarket_results = []
     unassigned_customer_indices = []
     
     if len(cluster_info) > 0:
-        print(f"Created {len(cluster_info)} INMARKET clusters")
+        print(f"Created {len(cluster_info)} first INMARKET clusters")
         
         # Step 2: Assign clusters to branches
-        print("Step 2: Assigning INMARKET clusters to branches...")
+        print("Step 2: Assigning first INMARKET clusters to branches...")
         cluster_assignments = assign_clusters_to_branches_vectorized(cluster_info, branch_df)
         
         # Step 3: Use greedy assignment for customer-AU assignment
-        print("Step 3: Using greedy assignment for INMARKET customer-AU assignment...")
+        print("Step 3: Using greedy assignment for first INMARKET customer-AU assignment...")
         customer_assignments, unassigned = greedy_assign_customers_to_branches(
             clustered_customers, cluster_assignments, branch_df
         )
         
-        # Create INMARKET results
+        # Create first INMARKET results
         for branch_au, customers in customer_assignments.items():
             for customer in customers:
                 customer_idx = customer['customer_idx']
@@ -971,11 +973,11 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     unassigned_customer_indices.extend(never_assigned)
     unassigned_customer_indices = list(set(unassigned_customer_indices))
     
-    print(f"Total unassigned customers after INMARKET: {len(unassigned_customer_indices)}")
+    print(f"Total unassigned customers after first INMARKET: {len(unassigned_customer_indices)}")
     
     # Step 4: Check proximity of unassigned customers to identified AUs
     proximity_results = []
-    final_unassigned_after_proximity = unassigned_customer_indices.copy()
+    unassigned_after_proximity = unassigned_customer_indices.copy()
     
     if unassigned_customer_indices and inmarket_results:
         # Create customer_assignments from inmarket_results for proximity check
@@ -999,38 +1001,91 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
         
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
-        proximity_results, final_unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
+        proximity_results, unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
             unassigned_customers_df, customer_assignments, branch_df, 
             proximity_threshold=20, max_portfolio_size=250
         )
     
-    # Step 5: Create CENTRALIZED clusters WITH radius constraint
+    print(f"Total unassigned customers after proximity check: {len(unassigned_after_proximity)}")
+    
+    # Step 5: Create second INMARKET clusters (40-mile radius) on remaining customers
+    print("Step 5: Creating second INMARKET clusters (40-mile radius)...")
+    second_inmarket_results = []
+    unassigned_after_second_inmarket = unassigned_after_proximity.copy()
+    
+    if unassigned_after_proximity:
+        remaining_customers_df = customer_df.loc[unassigned_after_proximity]
+        
+        # Create second iteration of INMARKET clusters with 40-mile radius
+        clustered_customers_2, cluster_info_2 = constrained_clustering_optimized(
+            remaining_customers_df, min_size=200, max_size=225, max_radius=40
+        )
+        
+        if len(cluster_info_2) > 0:
+            print(f"Created {len(cluster_info_2)} second INMARKET clusters")
+            
+            # Assign second iteration clusters to branches
+            cluster_assignments_2 = assign_clusters_to_branches_vectorized(cluster_info_2, branch_df)
+            
+            # Use greedy assignment for second iteration
+            customer_assignments_2, unassigned_2 = greedy_assign_customers_to_branches(
+                clustered_customers_2, cluster_assignments_2, branch_df
+            )
+            
+            # Create second INMARKET results
+            for branch_au, customers in customer_assignments_2.items():
+                for customer in customers:
+                    customer_idx = customer['customer_idx']
+                    customer_data = remaining_customers_df.loc[customer_idx]
+                    
+                    distance_value = customer.get('distance', 0)
+                    
+                    second_inmarket_results.append({
+                        'ECN': customer_data['ECN'],
+                        'BILLINGCITY': customer_data['BILLINGCITY'],
+                        'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                        'LAT_NUM': customer_data['LAT_NUM'],
+                        'LON_NUM': customer_data['LON_NUM'],
+                        'ASSIGNED_AU': branch_au,
+                        'DISTANCE_TO_AU': distance_value,
+                        'TYPE': 'INMARKET'
+                    })
+            
+            # Update unassigned list
+            never_assigned_2 = clustered_customers_2[clustered_customers_2['cluster'] == -1].index.tolist()
+            unassigned_after_second_inmarket = list(set(unassigned_2 + never_assigned_2))
+        else:
+            unassigned_after_second_inmarket = unassigned_after_proximity.copy()
+    
+    print(f"Total unassigned customers after second INMARKET: {len(unassigned_after_second_inmarket)}")
+    
+    # Step 6: Create CENTRALIZED clusters WITH radius constraint
     centralized_results = []
     final_unassigned = []
     
-    if final_unassigned_after_proximity:
-        remaining_unassigned_df = customer_df.loc[final_unassigned_after_proximity]
+    if unassigned_after_second_inmarket:
+        remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
         centralized_results, final_unassigned = create_centralized_clusters_with_radius_and_assign(
             remaining_unassigned_df, branch_df, min_size=200, max_size=240, max_radius=100
         )
     
-    # Combine results
-    all_results = inmarket_results + proximity_results + centralized_results
+    # Combine all results
+    all_results = inmarket_results + proximity_results + second_inmarket_results + centralized_results
     result_df = pd.DataFrame(all_results)
     
-    # Step 6: Optimize INMARKET portfolios until convergence
+    # Step 7: Optimize INMARKET portfolios until convergence
     if len(result_df) > 0:
-        print("Step 6: Optimizing INMARKET portfolios...")
+        print("Step 7: Optimizing INMARKET portfolios...")
         result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
     
-    # Step 7: Balance INMARKET portfolios to minimum size
+    # Step 8: Balance INMARKET portfolios to minimum size
     if len(result_df) > 0:
-        print("Step 7: Balancing INMARKET portfolios to minimum size...")
+        print("Step 8: Balancing INMARKET portfolios to minimum size...")
         result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
     
     # Print summary
-    print(f"\n=== FINAL ENHANCED SUMMARY ===")
+    print(f"\n=== FINAL SUMMARY WITH TWO INMARKET ITERATIONS ===")
     print(f"Total customers processed: {len(customer_df)}")
     if len(result_df) > 0:
         print(f"INMARKET customers assigned: {len(result_df[result_df['TYPE'] == 'INMARKET'])}")
@@ -1054,10 +1109,7 @@ def enhanced_customer_au_assignment_with_balancing(customer_df, branch_df):
     
     return result_df
 
-# Usage examples:
-# Method 1: Use the main function (includes all steps including balancing)
-# enhanced_assignments = enhanced_customer_au_assignment_with_balancing(customer_df, branch_df)
-# enhanced_assignments.to_csv('enhanced_customer_au_assignments.csv', index=False)
-
-# Method 2: Call the balancing function separately
-# result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
+# Usage example:
+# Enhanced assignments with two INMARKET iterations and centralized portfolios
+# assignments = enhanced_customer_au_assignment_with_two_inmarket_iterations(customer_df, branch_df)
+# assignments.to_csv('customer_au_assignments_two_inmarket_iterations.csv', index=False)
