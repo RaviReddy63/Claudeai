@@ -29,23 +29,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
         print(f"Error in distance calculation: {e}")
         return None
 
-def detect_coordinate_columns(df):
-    """Return the correct coordinate column names based on the dataframe type"""
-    # Check if this is a branch dataframe (has BRANCH_LAT_NUM column)
-    if 'BRANCH_LAT_NUM' in df.columns:
-        return 'BRANCH_LAT_NUM', 'BRANCH_LON_NUM'
-    # Check if this is a customer dataframe (has LAT_NUM column)
-    elif 'LAT_NUM' in df.columns:
-        return 'LAT_NUM', 'LON_NUM'
-    else:
-        # Fallback to auto-detection if exact columns not found
-        lat_cols = [col for col in df.columns if 'LAT' in col.upper()]
-        lon_cols = [col for col in df.columns if 'LON' in col.upper()]
-        
-        lat_col = lat_cols[0] if lat_cols else None
-        lon_col = lon_cols[0] if lon_cols else None
-        
-        return lat_col, lon_col
+
 
 def calculate_max_customer_distance_final(tagged_to_au, new_au, customer_au_assignments, branch_df, client_groups_df):
     """
@@ -55,25 +39,13 @@ def calculate_max_customer_distance_final(tagged_to_au, new_au, customer_au_assi
     if pd.isna(tagged_to_au) or pd.isna(new_au):
         return None
     
-    # Get coordinate columns for branch and customer data
-    branch_lat_col, branch_lon_col = detect_coordinate_columns(branch_df)
-    cust_lat_col, cust_lon_col = detect_coordinate_columns(client_groups_df)
-    
-    if not branch_lat_col or not branch_lon_col:
-        print(f"Warning: Could not find coordinate columns in branch_df")
-        return None
-    
-    if not cust_lat_col or not cust_lon_col:
-        print(f"Warning: Could not find coordinate columns in client_groups_df")
-        return None
-    
     # Step 1: Get coordinates of TAGGED_TO_AU (where portfolio is moving TO)
     tagged_au_info = branch_df[branch_df['BRANCH_AU'] == tagged_to_au]
     if len(tagged_au_info) == 0:
         return None
     
-    tagged_au_lat = tagged_au_info.iloc[0][branch_lat_col]
-    tagged_au_lon = tagged_au_info.iloc[0][branch_lon_col]
+    tagged_au_lat = tagged_au_info.iloc[0]['BRANCH_LAT_NUM']
+    tagged_au_lon = tagged_au_info.iloc[0]['BRANCH_LON_NUM']
     
     if pd.isna(tagged_au_lat) or pd.isna(tagged_au_lon):
         return None
@@ -95,8 +67,8 @@ def calculate_max_customer_distance_final(tagged_to_au, new_au, customer_au_assi
     # Step 4: Calculate distances from TAGGED_TO_AU to each customer of NEW_AU
     distances = []
     for _, customer in customer_data.iterrows():
-        cust_lat = customer[cust_lat_col]
-        cust_lon = customer[cust_lon_col]
+        cust_lat = customer['LAT_NUM']
+        cust_lon = customer['LON_NUM']
         
         if pd.notna(cust_lat) and pd.notna(cust_lon):
             distance = haversine_distance(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
@@ -125,13 +97,8 @@ def add_movement_analysis_final(tagging_results, customer_au_assignments, branch
         - MOVEMENT: 'MOVEMENT REQUIRED' if distance > 20, else 'NO MOVEMENT REQUIRED'
     """
     print("=== ADDING MOVEMENT ANALYSIS ===")
-    
-    # Display coordinate columns being used
-    branch_lat_col, branch_lon_col = detect_coordinate_columns(branch_df)
-    cust_lat_col, cust_lon_col = detect_coordinate_columns(client_groups_df)
-    
-    print(f"Branch coordinates: {branch_lat_col}, {branch_lon_col}")
-    print(f"Customer coordinates: {cust_lat_col}, {cust_lon_col}")
+    print("Branch coordinates: BRANCH_LAT_NUM, BRANCH_LON_NUM")
+    print("Customer coordinates: LAT_NUM, LON_NUM")
     print("Logic: Distance from TAGGED_TO_AU to customers of NEW_AU")
     
     # Create a copy to avoid modifying the original
