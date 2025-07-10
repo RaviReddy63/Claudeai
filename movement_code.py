@@ -153,7 +153,19 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, c
 #     tagging_results, 
 #     customer_au_assignments, 
 #     branch_df, 
-#     client_groups_df
+#     client_groups_df  # Make sure this matches your DataFrame name
+# )
+# 
+# Common DataFrame names from your code:
+# - client_groups_df (if using this name)
+# - CLIENT_GROUPS_DF_NEW (if using this name)
+# 
+# Example with CLIENT_GROUPS_DF_NEW:
+# tagging_results_with_movement = add_movement_analysis(
+#     tagging_results, 
+#     customer_au_assignments, 
+#     branch_df, 
+#     CLIENT_GROUPS_DF_NEW
 # )
 # 
 # tagging_results_with_movement.to_csv('portfolio_tagging_with_movement.csv', index=False)
