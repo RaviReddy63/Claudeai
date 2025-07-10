@@ -67,9 +67,11 @@ def calculate_max_customer_distance_final(tagged_to_au, new_au, customer_au_assi
         return None
     
     # Step 4: Calculate distances from TAGGED_TO_AU to each customer of NEW_AU
-    distances = []
+    # Use a variable to track maximum distance instead of collecting all distances
+    max_distance_found = None
     customers_processed = 0
     customers_with_coords = 0
+    valid_distances_count = 0
     
     for _, customer in customer_data.iterrows():
         customers_processed += 1
@@ -79,28 +81,30 @@ def calculate_max_customer_distance_final(tagged_to_au, new_au, customer_au_assi
         if pd.notna(cust_lat) and pd.notna(cust_lon):
             customers_with_coords += 1
             distance = haversine_distance(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
+            
             if distance is not None and distance >= 0:
-                distances.append(distance)
+                valid_distances_count += 1
+                
+                # Update max_distance_found using if condition
+                if max_distance_found is None:
+                    max_distance_found = distance
+                elif distance > max_distance_found:
+                    max_distance_found = distance
     
-    print(f"NEW_AU {new_au}: {customers_processed} customers total, {customers_with_coords} with coordinates, {len(distances)} valid distances")
+    print(f"NEW_AU {new_au}: {customers_processed} customers total, {customers_with_coords} with coordinates, {valid_distances_count} valid distances")
     
-    # Step 5: Return maximum distance - IMPROVED ERROR HANDLING
-    if not distances:  # Check if list is empty
+    # Step 5: Return maximum distance
+    if max_distance_found is None:
         print(f"Warning: No valid distances calculated for NEW_AU: {new_au}")
         return None
     
-    try:
-        max_distance = max(distances)
-        print(f"Max distance for NEW_AU {new_au}: {max_distance:.2f} miles")
-        return max_distance
-    except ValueError as e:
-        print(f"Error calculating max distance for NEW_AU {new_au}: {e}")
-        return None
+    print(f"Max distance for NEW_AU {new_au}: {max_distance_found:.2f} miles")
+    return max_distance_found
 
-# Alternative approach using numpy for better performance and error handling
-def calculate_max_customer_distance_numpy(tagged_to_au, new_au, customer_au_assignments, branch_df, client_groups_df):
+# Alternative approach using variable to track maximum distance
+def calculate_max_customer_distance_alternative(tagged_to_au, new_au, customer_au_assignments, branch_df, client_groups_df):
     """
-    Calculate maximum distance using numpy for better performance
+    Calculate maximum distance using a variable to track max distance (no lists, no max function)
     """
     if pd.isna(tagged_to_au) or pd.isna(new_au):
         return None
@@ -130,39 +134,29 @@ def calculate_max_customer_distance_numpy(tagged_to_au, new_au, customer_au_assi
     if len(customer_data) == 0:
         return None
     
-    # Step 4: Filter customers with valid coordinates
-    valid_customers = customer_data.dropna(subset=['LAT_NUM', 'LON_NUM'])
+    # Step 4: Find maximum distance using variable tracking
+    max_distance_found = None
     
-    if len(valid_customers) == 0:
-        return None
-    
-    # Step 5: Calculate distances using numpy arrays
-    try:
-        # Convert to numpy arrays for vectorized calculation
-        customer_lats = valid_customers['LAT_NUM'].values
-        customer_lons = valid_customers['LON_NUM'].values
+    for _, customer in customer_data.iterrows():
+        cust_lat = customer['LAT_NUM']
+        cust_lon = customer['LON_NUM']
         
-        # Calculate distances for all customers at once
-        distances = []
-        for i in range(len(customer_lats)):
-            dist = haversine_distance(tagged_au_lat, tagged_au_lon, customer_lats[i], customer_lons[i])
-            if dist is not None and dist >= 0:
-                distances.append(dist)
-        
-        # Return max distance with safe handling
-        if distances:
-            return np.max(distances)
-        else:
-            return None
+        if pd.notna(cust_lat) and pd.notna(cust_lon):
+            distance = haversine_distance(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
             
-    except Exception as e:
-        print(f"Error in numpy distance calculation: {e}")
-        return None
+            if distance is not None and distance >= 0:
+                # Update max distance using if condition
+                if max_distance_found is None:
+                    max_distance_found = distance
+                elif distance > max_distance_found:
+                    max_distance_found = distance
+    
+    return max_distance_found
 
-# Alternative approach using pandas operations
+# Alternative approach using variable tracking (no lists, no max function)
 def calculate_max_customer_distance_pandas(tagged_to_au, new_au, customer_au_assignments, branch_df, client_groups_df):
     """
-    Calculate maximum distance using pandas operations
+    Calculate maximum distance using variable tracking approach
     """
     if pd.isna(tagged_to_au) or pd.isna(new_au):
         return None
@@ -190,20 +184,19 @@ def calculate_max_customer_distance_pandas(tagged_to_au, new_au, customer_au_ass
         if customer_coords.empty:
             return None
         
-        # Calculate distances
-        distances = customer_coords.apply(
-            lambda row: haversine_distance(branch_lat, branch_lon, row['LAT_NUM'], row['LON_NUM']),
-            axis=1
-        )
+        # Find maximum distance using variable tracking
+        max_distance_found = None
         
-        # Filter valid distances and return max
-        valid_distances = distances.dropna()
-        valid_distances = valid_distances[valid_distances >= 0]
+        for _, row in customer_coords.iterrows():
+            distance = haversine_distance(branch_lat, branch_lon, row['LAT_NUM'], row['LON_NUM'])
+            
+            if distance is not None and distance >= 0:
+                if max_distance_found is None:
+                    max_distance_found = distance
+                elif distance > max_distance_found:
+                    max_distance_found = distance
         
-        if valid_distances.empty:
-            return None
-        
-        return valid_distances.max()
+        return max_distance_found
         
     except Exception as e:
         print(f"Error in pandas distance calculation: {e}")
