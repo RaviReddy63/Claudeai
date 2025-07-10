@@ -342,7 +342,7 @@ def calculate_movement_status(new_au, new_type, tagged_to_au, tagging_criteria, 
     # Get customers for the new portfolio
     new_customers = customer_au_assignments[
         (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-        (customer_au_assignments['TYPE'] == 'INMARKET')
+        (customer_au_assignments['TYPE'].isin(['INMARKET', 'IN MARKET']))
     ]['CG_ECN'].dropna().tolist()
     
     if not new_customers:
@@ -601,7 +601,25 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
 
 # Usage:
 # tagging_results = tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df)
-# tagging_results.to_csv('portfolio_tagging_results.csv', index=False)bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
+# tagging_results.to_csv('portfolio_tagging_results.csv', index=False)
+
+# Example of how to use the function:
+"""
+# Sample usage with your dataframes:
+tagging_results = tag_new_portfolios_to_mojgan_portfolios(
+    customer_au_assignments=your_customer_au_assignments_df,
+    active_portfolio_df=your_active_portfolio_df, 
+    client_groups_df=your_client_groups_df,
+    branch_df=your_branch_df
+)
+
+# Save results to CSV
+tagging_results.to_csv('portfolio_tagging_results_with_movement.csv', index=False)
+
+# Display results
+print(tagging_results.head())
+print(f"\nTotal portfolios processed: {len(tagging_results)}")
+"""bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
             
             # Calculate average AU-customer distances
             new_avg_au_customer_distance = calculate_avg_au_customer_distance(new_au, new_customers, branch_df, client_groups_df)
