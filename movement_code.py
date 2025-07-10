@@ -35,25 +35,31 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
             results.at[i, 'MOVEMENT'] = None
             continue
         
-        # Get branch coordinates
-        branch = branch_df[branch_df['BRANCH_AU'] == tagged_to_au]
-        if len(branch) == 0:
+        # Get NEW_AU coordinates from branch_df
+        new_au_branch = branch_df[branch_df['BRANCH_AU'] == new_au]
+        if len(new_au_branch) == 0:
             continue
-            
-        branch_lat = branch.iloc[0]['BRANCH_LAT_NUM']
-        branch_lon = branch.iloc[0]['BRANCH_LON_NUM']
+        new_au_lat = new_au_branch.iloc[0]['BRANCH_LAT_NUM']
+        new_au_lon = new_au_branch.iloc[0]['BRANCH_LON_NUM']
+        
+        # Get TAGGED_TO_AU coordinates from branch_df
+        tagged_au_branch = branch_df[branch_df['BRANCH_AU'] == tagged_to_au]
+        if len(tagged_au_branch) == 0:
+            continue
+        tagged_au_lat = tagged_au_branch.iloc[0]['BRANCH_LAT_NUM']
+        tagged_au_lon = tagged_au_branch.iloc[0]['BRANCH_LON_NUM']
         
         # Get customers for NEW_AU from customer_au_assignments
         new_au_customers = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] == new_au]
         
-        # Calculate distances to all customers for NEW_AU (for max distance calculation)
+        # Calculate distances from NEW_AU to its customers
         max_distance = 0
         new_au_distances = []
         for _, customer_row in new_au_customers.iterrows():
             cust_lat = customer_row['LAT_NUM']
             cust_lon = customer_row['LON_NUM']
             
-            distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
+            distance = distance_miles(new_au_lat, new_au_lon, cust_lat, cust_lon)
             new_au_distances.append(distance)
             if distance > max_distance:
                 max_distance = distance
@@ -66,7 +72,7 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
         # Get customers for TAGGED_TO_AU from CLIENT_GROUPS_DF_NEW using portfolio code
         tagged_portfolio = row['TAGGED_TO_PORTFOLIO']
         
-        # Calculate distances to all customers for TAGGED_TO_AU (current assignment)
+        # Calculate distances from TAGGED_TO_AU to its customers
         current_au_distances = []
         if not pd.isna(tagged_portfolio):
             tagged_au_customers = CLIENT_GROUPS_DF_NEW[CLIENT_GROUPS_DF_NEW['CG_PORTFOLIO_CD'] == tagged_portfolio]
@@ -75,7 +81,7 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
                 cust_lat = customer_row['LAT_NUM']
                 cust_lon = customer_row['LON_NUM']
                 
-                distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
+                distance = distance_miles(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
                 current_au_distances.append(distance)
         
         # Calculate average distance for TAGGED_TO_AU
