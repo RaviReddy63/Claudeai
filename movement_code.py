@@ -78,8 +78,8 @@ def calculate_max_customer_distance_corrected(tagged_to_au, new_au, customer_au_
     # Step 4: Calculate distances from TAGGED_TO_AU to each customer of NEW_AU
     distances = []
     for _, customer in customer_data.iterrows():
-        cust_lat = customer['CG_LAT_NUM'] if 'CG_LAT_NUM' in customer_data.columns else None
-        cust_lon = customer['CG_LON_NUM'] if 'CG_LON_NUM' in customer_data.columns else None
+        cust_lat = customer['LAT_NUM'] if 'LAT_NUM' in customer_data.columns else None
+        cust_lon = customer['LON_NUM'] if 'LON_NUM' in customer_data.columns else None
         
         if pd.notna(cust_lat) and pd.notna(cust_lon):
             distance = haversine_distance(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
