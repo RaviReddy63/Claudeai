@@ -432,7 +432,7 @@ def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assign
     
     return results_with_transfer
 
-def reserve_special_portfolios(customer_au_assignments):
+def reserve_special_portfolios(customer_au_assignments, client_groups_df):
     """Reserve specific portfolios before general tagging process"""
     # RESERVATION: AU 500 to JOSHUA NGUYEN
     # This can be easily removed by deleting this function call from the main function
@@ -493,7 +493,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     print("=== TAGGING NEW PORTFOLIOS TO MOJGAN MADADI PORTFOLIOS ===")
     
     # STEP 1: Handle special reservations first
-    reserved_tags = reserve_special_portfolios(customer_au_assignments)
+    reserved_tags = reserve_special_portfolios(customer_au_assignments, client_groups_df)
     
     # STEP 2: Filter out reserved portfolios from general tagging process
     customer_au_assignments_filtered = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] != 500].copy()
