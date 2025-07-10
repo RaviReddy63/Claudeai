@@ -17,7 +17,7 @@ def distance_miles(lat1, lon1, lat2, lon2):
     
     return 3959 * c  # Earth radius in miles
 
-def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, CLIENT_GROUPS_DF_NEW):
+def add_movement_analysis(tagging_results, customer_au_assignments, branch_df):
     """Simple movement analysis"""
     
     results = tagging_results.copy()
@@ -41,18 +41,14 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
         branch_lat = branch.iloc[0]['BRANCH_LAT_NUM']
         branch_lon = branch.iloc[0]['BRANCH_LON_NUM']
         
-        # Get customers for this AU
-        customers = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] == new_au]['CG_ECN'].tolist()
+        # Get customers for this AU with their coordinates
+        customers = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] == new_au]
         
         # Calculate distances to all customers
         max_distance = 0
-        for customer_id in customers:
-            customer = CLIENT_GROUPS_DF_NEW[CLIENT_GROUPS_DF_NEW['CG_ECN'] == customer_id]
-            if len(customer) == 0:
-                continue
-                
-            cust_lat = customer.iloc[0]['LAT_NUM']
-            cust_lon = customer.iloc[0]['LON_NUM']
+        for _, customer_row in customers.iterrows():
+            cust_lat = customer_row['LAT_NUM']
+            cust_lon = customer_row['LON_NUM']
             
             distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
             if distance > max_distance:
@@ -66,4 +62,4 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
     return results
 
 # Usage:
-# results_with_movement = add_movement_analysis(tagging_results, customer_au_assignments, branch_df, CLIENT_GROUPS_DF_NEW)
+# results_with_movement = add_movement_analysis(tagging_results, customer_au_assignments, branch_df)
