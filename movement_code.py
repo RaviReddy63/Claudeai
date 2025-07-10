@@ -63,17 +63,20 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
             new_avg_distance = np.mean(new_au_distances)
             results.at[i, 'NEW_AVG_DIST_FROM_CUSTS'] = new_avg_distance
         
-        # Get customers for TAGGED_TO_AU from CLIENT_GROUPS_DF_NEW
-        tagged_au_customers = CLIENT_GROUPS_DF_NEW[CLIENT_GROUPS_DF_NEW['ASSIGNED_AU'] == tagged_to_au]
+        # Get customers for TAGGED_TO_AU from CLIENT_GROUPS_DF_NEW using portfolio code
+        tagged_portfolio = row['TAGGED_TO_PORTFOLIO']
         
         # Calculate distances to all customers for TAGGED_TO_AU (current assignment)
         current_au_distances = []
-        for _, customer_row in tagged_au_customers.iterrows():
-            cust_lat = customer_row['LAT_NUM']
-            cust_lon = customer_row['LON_NUM']
+        if not pd.isna(tagged_portfolio):
+            tagged_au_customers = CLIENT_GROUPS_DF_NEW[CLIENT_GROUPS_DF_NEW['CG_PORTFOLIO_CD'] == tagged_portfolio]
             
-            distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
-            current_au_distances.append(distance)
+            for _, customer_row in tagged_au_customers.iterrows():
+                cust_lat = customer_row['LAT_NUM']
+                cust_lon = customer_row['LON_NUM']
+                
+                distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
+                current_au_distances.append(distance)
         
         # Calculate average distance for TAGGED_TO_AU
         if current_au_distances:
