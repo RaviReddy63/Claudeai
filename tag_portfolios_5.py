@@ -412,11 +412,8 @@ def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assign
         elif max_distance is not None and max_distance > transfer_threshold_miles:
             results_with_transfer.at[idx, 'MOVEMENT'] = 'TRANSFER NEEDED'
         else:
-            # For cases where distance couldn't be calculated (e.g., centralized portfolios, reserved portfolios)
-            if row['TAGGING_CRITERIA'] == 'SPECIAL_RESERVATION':
-                results_with_transfer.at[idx, 'MOVEMENT'] = 'RESERVED - NO ANALYSIS'
-            else:
-                results_with_transfer.at[idx, 'MOVEMENT'] = 'UNABLE TO DETERMINE'
+            # For cases where distance couldn't be calculated (e.g., centralized portfolios)
+            results_with_transfer.at[idx, 'MOVEMENT'] = 'UNABLE TO DETERMINE'
     
     # Print summary
     movement_summary = results_with_transfer['MOVEMENT'].value_counts()
@@ -435,7 +432,7 @@ def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assign
     
     return results_with_transfer
 
-def reserve_special_portfolios(customer_au_assignments, client_groups_df):
+def reserve_special_portfolios(customer_au_assignments, client_groups_df, branch_df):
     """Reserve specific portfolios before general tagging process"""
     # RESERVATION: AU 500 to JOSHUA NGUYEN
     # This can be easily removed by deleting this function call from the main function
@@ -463,17 +460,20 @@ def reserve_special_portfolios(customer_au_assignments, client_groups_df):
             # Calculate financial metrics
             avg_deposit, avg_gross_sales, avg_bank_revenue = get_portfolio_financial_metrics(au_500_customers, client_groups_df)
             
+            # Calculate average AU-customer distance
+            new_avg_au_customer_distance = calculate_avg_au_customer_distance(500, au_500_customers, branch_df, client_groups_df)
+            
             reserved_assignments.append({
                 'NEW_AU': 500,
                 'NEW_TYPE': portfolio_type,
                 'NEW_CUSTOMER_COUNT': customer_count,
-                'TAGGED_TO_PORTFOLIO': 'RESERVED',
-                'TAGGED_TO_EMPLOYEE': 'RESERVED',
+                'TAGGED_TO_PORTFOLIO': '',  # No portfolio assignment - just manager assignment
+                'TAGGED_TO_EMPLOYEE': '',  # No employee assignment
                 'TAGGED_TO_MANAGER': 'JOSHUA NGUYEN',
-                'TAGGED_TO_DIRECTOR': 'RESERVED',
-                'TAGGED_TO_AU': 'RESERVED',
+                'TAGGED_TO_DIRECTOR': '',  # Will be assigned by nearest distance logic
+                'TAGGED_TO_AU': 500,  # Tagged to itself
                 'TAGGING_CRITERIA': 'SPECIAL_RESERVATION',
-                'DISTANCE_MILES': None,
+                'DISTANCE_MILES': 0,  # Distance to itself is 0
                 'CUSTOMER_OVERLAP_COUNT': 0,
                 'EXISTING_PORTFOLIO_SIZE': 0,
                 'EXISTING_AVG_DEPOSIT_BAL': None,
@@ -482,7 +482,7 @@ def reserve_special_portfolios(customer_au_assignments, client_groups_df):
                 'NEW_AVG_DEPOSIT_BAL': avg_deposit,
                 'NEW_AVG_GROSS_SALES': avg_gross_sales,
                 'NEW_AVG_BANK_REVENUE': avg_bank_revenue,
-                'NEW_AVG_AU_CUSTOMER_DISTANCE_MILES': None,
+                'NEW_AVG_AU_CUSTOMER_DISTANCE_MILES': new_avg_au_customer_distance,
                 'EXISTING_AVG_AU_CUSTOMER_DISTANCE_MILES': None
             })
         
@@ -496,7 +496,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     print("=== TAGGING NEW PORTFOLIOS TO MOJGAN MADADI PORTFOLIOS ===")
     
     # STEP 1: Handle special reservations first
-    reserved_tags = reserve_special_portfolios(customer_au_assignments, client_groups_df)
+    reserved_tags = reserve_special_portfolios(customer_au_assignments, client_groups_df, branch_df)
     
     # STEP 2: Filter out reserved portfolios from general tagging process
     customer_au_assignments_filtered = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] != 500].copy()
