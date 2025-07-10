@@ -59,14 +59,6 @@ def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
         print(f"Error in distance calculation: {e}")
         return float('inf')
 
-def safe_get_value(row, column, default=''):
-    """Safely get value from pandas row, handling NaN"""
-    try:
-        value = row[column]
-        return value if pd.notna(value) else default
-    except (KeyError, IndexError):
-        return default
-
 def calculate_avg_au_customer_distance(au_code, customer_list, branch_df, client_groups_df):
     """Calculate average distance between AU and its customers"""
     if not customer_list or pd.isna(au_code):
@@ -288,14 +280,19 @@ def count_new_customers_not_in_active_portfolios(customer_au_assignments, client
     new_customers_not_in_active = new_portfolio_customers - active_portfolio_customers
     return len(new_customers_not_in_active)
 
+def safe_get_value(row, column, default=''):
+    """Safely get value from pandas row, handling NaN"""
+    try:
+        value = row[column]
+        return value if pd.notna(value) else default
+    except (KeyError, IndexError):
+        return default
+
 def get_unique_new_portfolios(customer_au_assignments):
     """Get unique new portfolios with their customer counts"""
     # Clean data before grouping
     clean_assignments = customer_au_assignments.copy()
     clean_assignments = clean_assignments.dropna(subset=['ASSIGNED_AU', 'TYPE', 'CG_ECN'])
-    
-    # Standardize TYPE values
-    clean_assignments['TYPE'] = clean_assignments['TYPE'].replace('INMARKET', 'IN MARKET')
     
     portfolio_summary = clean_assignments.groupby(['ASSIGNED_AU', 'TYPE']).agg({
         'CG_ECN': 'count'
@@ -332,61 +329,108 @@ def find_nearest_portfolio_for_manager_director(new_au, branch_df, all_portfolio
     
     return nearest_manager, nearest_director, min_distance
 
-def calculate_movement_status(new_au, new_type, tagged_to_au, tagging_criteria, customer_au_assignments, client_groups_df, branch_df):
-    """Calculate movement status based on distance between existing AU and new portfolio customers"""
-    
-    # Only calculate for IN MARKET portfolios that are tagged to existing portfolios
-    if (new_type != 'IN MARKET' or 
-        tagged_to_au == '' or 
-        tagged_to_au == 'N/A (CENTRALIZED)' or 
-        tagging_criteria == 'NEAREST_MANAGER_DIRECTOR_ONLY'):
+def calculate_max_distance_to_tagged_au(new_au, tagged_au, customer_list, branch_df, client_groups_df):
+    """Calculate maximum distance between tagged AU and customers in new portfolio"""
+    if not customer_list or pd.isna(tagged_au) or tagged_au == '' or tagged_au == 'N/A (CENTRALIZED)':
         return None
     
-    # Get customers for the new portfolio
-    new_customers = customer_au_assignments[
-        (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-        (customer_au_assignments['TYPE'] == 'IN MARKET')
-    ]['CG_ECN'].dropna().tolist()
-    
-    if not new_customers:
+    # Get tagged AU coordinates
+    tagged_au_info = branch_df[branch_df['BRANCH_AU'] == tagged_au]
+    if len(tagged_au_info) == 0:
         return None
     
-    # Get existing AU coordinates
-    existing_au_info = branch_df[branch_df['BRANCH_AU'] == tagged_to_au]
-    if len(existing_au_info) == 0:
+    tagged_au_lat = safe_get_value(tagged_au_info.iloc[0], 'BRANCH_LAT_NUM', None)
+    tagged_au_lon = safe_get_value(tagged_au_info.iloc[0], 'BRANCH_LON_NUM', None)
+    
+    if pd.isna(tagged_au_lat) or pd.isna(tagged_au_lon):
         return None
     
-    existing_au_lat = safe_get_value(existing_au_info.iloc[0], 'BRANCH_LAT_NUM', None)
-    existing_au_lon = safe_get_value(existing_au_info.iloc[0], 'BRANCH_LON_NUM', None)
-    
-    if pd.isna(existing_au_lat) or pd.isna(existing_au_lon):
+    # Filter customer list to remove NaN values
+    valid_customers = [x for x in customer_list if pd.notna(x)]
+    if not valid_customers:
         return None
     
-    # Get customer coordinates and calculate distances
-    customer_data = client_groups_df[client_groups_df['CG_ECN'].isin(new_customers)]
+    # Get customer coordinates
+    customer_data = client_groups_df[client_groups_df['CG_ECN'].isin(valid_customers)]
     
     if len(customer_data) == 0:
         return None
     
-    max_distance = 0
-    valid_distances_found = False
-    
+    # Calculate distances for each customer
+    distances = []
     for _, customer in customer_data.iterrows():
         cust_lat = safe_get_value(customer, 'CG_LAT_NUM', None)
         cust_lon = safe_get_value(customer, 'CG_LON_NUM', None)
         
         if pd.notna(cust_lat) and pd.notna(cust_lon):
-            distance = haversine_distance_vectorized(existing_au_lat, existing_au_lon, cust_lat, cust_lon)
+            distance = haversine_distance_vectorized(tagged_au_lat, tagged_au_lon, cust_lat, cust_lon)
             if not np.isinf(distance) and distance >= 0:
-                max_distance = max(max_distance, distance)
-                valid_distances_found = True
+                distances.append(distance)
     
-    # If no valid distances found, return None
-    if not valid_distances_found:
+    # Return maximum distance
+    if distances:
+        return max(distances)
+    else:
         return None
+
+def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assignments, branch_df, client_groups_df, transfer_threshold_miles=20):
+    """Add transfer analysis columns to tagging results"""
+    if len(tagging_results) == 0:
+        return tagging_results
     
-    # Return movement status based on maximum distance
-    return 'NO TRANSFER' if max_distance < 20 else 'TRANSFER'
+    # Create a copy to avoid modifying the original
+    results_with_transfer = tagging_results.copy()
+    
+    # Initialize new columns
+    results_with_transfer['MAX_DISTANCE_TO_TAGGED_AU_MILES'] = None
+    results_with_transfer['MOVEMENT'] = ''
+    
+    print(f"Analyzing transfer requirements (threshold: {transfer_threshold_miles} miles)...")
+    
+    # Process each tagged portfolio
+    for idx, row in results_with_transfer.iterrows():
+        new_au = row['NEW_AU']
+        new_type = row['NEW_TYPE']
+        tagged_au = row['TAGGED_TO_AU']
+        
+        # Get customers for this new portfolio
+        new_customers = customer_au_assignments[
+            (customer_au_assignments['ASSIGNED_AU'] == new_au) &
+            (customer_au_assignments['TYPE'] == new_type)
+        ]['CG_ECN'].dropna().tolist()
+        
+        # Calculate max distance to tagged AU
+        max_distance = calculate_max_distance_to_tagged_au(
+            new_au, tagged_au, new_customers, branch_df, client_groups_df
+        )
+        
+        results_with_transfer.at[idx, 'MAX_DISTANCE_TO_TAGGED_AU_MILES'] = max_distance
+        
+        # Determine movement requirement
+        if max_distance is not None and max_distance <= transfer_threshold_miles:
+            results_with_transfer.at[idx, 'MOVEMENT'] = 'NO TRANSFER'
+        elif max_distance is not None and max_distance > transfer_threshold_miles:
+            results_with_transfer.at[idx, 'MOVEMENT'] = 'TRANSFER NEEDED'
+        else:
+            # For cases where distance couldn't be calculated (e.g., centralized portfolios)
+            results_with_transfer.at[idx, 'MOVEMENT'] = 'UNABLE TO DETERMINE'
+    
+    # Print summary
+    movement_summary = results_with_transfer['MOVEMENT'].value_counts()
+    print(f"\nTRANSFER ANALYSIS SUMMARY:")
+    for movement_type, count in movement_summary.items():
+        print(f"{movement_type}: {count}")
+    
+    # Additional statistics
+    valid_distances = results_with_transfer['MAX_DISTANCE_TO_TAGGED_AU_MILES'].dropna()
+    if len(valid_distances) > 0:
+        print(f"\nDISTANCE STATISTICS:")
+        print(f"Average max distance to tagged AU: {valid_distances.mean():.2f} miles")
+        print(f"Median max distance to tagged AU: {valid_distances.median():.2f} miles")
+        print(f"Maximum distance to tagged AU: {valid_distances.max():.2f} miles")
+        print(f"Minimum distance to tagged AU: {valid_distances.min():.2f} miles")
+    
+    return results_with_transfer
 
 def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df):
     """Main function to tag new portfolios to existing MOJGAN MADADI portfolios using AU locations"""
@@ -395,7 +439,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     
     # Get unique new portfolios with customer counts
     new_portfolios = get_unique_new_portfolios(customer_au_assignments)
-    new_inmarket = new_portfolios[new_portfolios['TYPE'] == 'IN MARKET']
+    new_inmarket = new_portfolios[new_portfolios['TYPE'] == 'INMARKET']
     new_centralized = new_portfolios[new_portfolios['TYPE'] == 'CENTRALIZED']
     
     print(f"New portfolios: IN MARKET: {len(new_inmarket)}, CENTRALIZED: {len(new_centralized)}")
@@ -430,12 +474,6 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             new_lat = safe_get_value(new_au_info.iloc[0], 'BRANCH_LAT_NUM', 0)
             new_lon = safe_get_value(new_au_info.iloc[0], 'BRANCH_LON_NUM', 0)
             
-            # Get customers for this new portfolio
-            new_customers = customer_au_assignments[
-                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                (customer_au_assignments['TYPE'] == 'IN MARKET')
-            ]['CG_ECN'].dropna().tolist()
-            
             for _, existing_portfolio in existing_inmarket.iterrows():
                 existing_lat = safe_get_value(existing_portfolio, 'BRANCH_LAT_NUM', 0)
                 existing_lon = safe_get_value(existing_portfolio, 'BRANCH_LON_NUM', 0)
@@ -444,7 +482,6 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 inmarket_combinations.append({
                     'new_au': new_au,
                     'new_customer_count': new_portfolio['CUSTOMER_COUNT'],
-                    'new_customers': new_customers,
                     'existing_portfolio': safe_get_value(existing_portfolio, 'PORT_CODE', ''),
                     'existing_employee': safe_get_value(existing_portfolio, 'EMPLOYEE_NAME', ''),
                     'existing_manager': safe_get_value(existing_portfolio, 'MANAGER_NAME', ''),
@@ -466,15 +503,20 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 continue
             
             # Calculate customer overlap
+            new_customers = customer_au_assignments[
+                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
+                (customer_au_assignments['TYPE'] == 'INMARKET')
+            ]['CG_ECN'].dropna().tolist()
+            
             existing_customers = existing_portfolio_customers.get(existing_portfolio, set())
-            overlap_count = calculate_customer_overlap(combo['new_customers'], existing_customers)
+            overlap_count = calculate_customer_overlap(new_customers, existing_customers)
             
             # Get financial metrics
             existing_avg_deposit, existing_avg_gross_sales, existing_avg_bank_revenue, existing_portfolio_size = get_portfolio_financial_metrics_by_portfolio_code(existing_portfolio, client_groups_df)
-            new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(combo['new_customers'], client_groups_df)
+            new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
             
             # Calculate average AU-customer distances
-            new_avg_au_customer_distance = calculate_avg_au_customer_distance(new_au, combo['new_customers'], branch_df, client_groups_df)
+            new_avg_au_customer_distance = calculate_avg_au_customer_distance(new_au, new_customers, branch_df, client_groups_df)
             existing_avg_au_customer_distance = calculate_avg_portfolio_customer_distance(existing_portfolio, client_groups_df, active_portfolio_df, branch_df)
             
             all_tags.append({
@@ -529,7 +571,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     # Combine all untagged portfolios
     all_untagged_portfolios = untagged_inmarket_portfolios + untagged_centralized_portfolios
     
-    # PHASE 2: Tag remaining portfolios to CENTRALIZED existing portfolios based on customer overlap
+    # PHASE 2: Tag remaining CENTRALIZED existing portfolios to untagged new portfolios based on customer overlap
     if len(all_untagged_portfolios) > 0 and len(existing_centralized) > 0:
         used_existing_centralized = set()
         
@@ -540,19 +582,10 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
             new_type = untagged_portfolio['type']
             
             # Get customers for this untagged portfolio
-            # Handle both original and standardized TYPE values
-            type_filter = new_type
-            if new_type == 'IN MARKET':
-                # Try both 'IN MARKET' and 'INMARKET' to handle inconsistencies
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'].isin(['IN MARKET', 'INMARKET']))
-                ]['CG_ECN'].dropna().tolist()
-            else:
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'] == new_type)
-                ]['CG_ECN'].dropna().tolist()
+            new_customers = customer_au_assignments[
+                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
+                (customer_au_assignments['TYPE'] == new_type)
+            ]['CG_ECN'].dropna().tolist()
             
             for _, existing_portfolio in existing_centralized.iterrows():
                 existing_port_code = safe_get_value(existing_portfolio, 'PORT_CODE', '')
@@ -627,19 +660,10 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         new_au = untagged_portfolio['au']
         if new_au not in used_new_untagged:
             new_type = untagged_portfolio['type']
-            # Get customers for this untagged portfolio  
-            # Handle both original and standardized TYPE values
-            if new_type == 'IN MARKET':
-                # Try both 'IN MARKET' and 'INMARKET' to handle inconsistencies
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'].isin(['IN MARKET', 'INMARKET']))
-                ]['CG_ECN'].dropna().tolist()
-            else:
-                new_customers = customer_au_assignments[
-                    (customer_au_assignments['ASSIGNED_AU'] == new_au) &
-                    (customer_au_assignments['TYPE'] == new_type)
-                ]['CG_ECN'].dropna().tolist()
+            new_customers = customer_au_assignments[
+                (customer_au_assignments['ASSIGNED_AU'] == new_au) &
+                (customer_au_assignments['TYPE'] == new_type)
+            ]['CG_ECN'].dropna().tolist()
             
             new_avg_deposit, new_avg_gross_sales, new_avg_bank_revenue = get_portfolio_financial_metrics(new_customers, client_groups_df)
             
@@ -674,19 +698,6 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'EXISTING_AVG_AU_CUSTOMER_DISTANCE_MILES': None
             })
     
-    # Calculate movement status for each tag
-    for tag in all_tags:
-        movement_status = calculate_movement_status(
-            tag['NEW_AU'],
-            tag['NEW_TYPE'], 
-            tag['TAGGED_TO_AU'],
-            tag['TAGGING_CRITERIA'],
-            customer_au_assignments,
-            client_groups_df,
-            branch_df
-        )
-        tag['MOVEMENT'] = movement_status
-    
     # Create results dataframe
     tagging_results = pd.DataFrame(all_tags)
     
@@ -720,39 +731,34 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         print(f"Tagged by AU distance (IN MARKET): {len(distance_tagged)}")
         print(f"Tagged by customer overlap (CENTRALIZED): {len(overlap_tagged)}")
         print(f"Assigned nearest manager/director only: {len(manager_director_only)}")
-        
-        # Movement summary
-        movement_counts = tagging_results['MOVEMENT'].value_counts(dropna=False)
-        print(f"\nMOVEMENT SUMMARY:")
-        for status, count in movement_counts.items():
-            status_label = 'NULL' if pd.isna(status) else status
-            print(f"{status_label}: {count}")
     
     return tagging_results
 
+def tag_new_portfolios_to_mojgan_portfolios_with_transfer_analysis(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df, transfer_threshold_miles=20):
+    """Main function with transfer analysis included"""
+    
+    # Get the original tagging results
+    tagging_results = tag_new_portfolios_to_mojgan_portfolios(
+        customer_au_assignments, active_portfolio_df, client_groups_df, branch_df
+    )
+    
+    # Add transfer analysis
+    tagging_results_with_transfer = add_transfer_analysis_to_tagging_results(
+        tagging_results, customer_au_assignments, branch_df, client_groups_df, transfer_threshold_miles
+    )
+    
+    return tagging_results_with_transfer
+
 # Usage examples:
-"""
-# Sample usage with your dataframes:
-tagging_results = tag_new_portfolios_to_mojgan_portfolios(
-    customer_au_assignments=your_customer_au_assignments_df,
-    active_portfolio_df=your_active_portfolio_df, 
-    client_groups_df=your_client_groups_df,
-    branch_df=your_branch_df
-)
-
-# Save results to CSV
-tagging_results.to_csv('portfolio_tagging_results_with_movement.csv', index=False)
-
-# Display results
-print(tagging_results.head())
-print(f"\nTotal portfolios processed: {len(tagging_results)}")
-
-# Filter results by criteria
-distance_tagged = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'CLOSEST_AU_DISTANCE']
-overlap_tagged = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'MAX_CUSTOMER_OVERLAP']
-nearest_only = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'NEAREST_MANAGER_DIRECTOR_ONLY']
-
-print(f"Distance-based tagging: {len(distance_tagged)} portfolios")
-print(f"Overlap-based tagging: {len(overlap_tagged)} portfolios") 
-print(f"Nearest manager/director only: {len(nearest_only)} portfolios")
-"""
+# 
+# Basic tagging without transfer analysis:
+# tagging_results = tag_new_portfolios_to_mojgan_portfolios(
+#     customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df
+# )
+# tagging_results.to_csv('portfolio_tagging_results.csv', index=False)
+#
+# Full analysis with transfer requirements:
+# tagging_results_with_transfer = tag_new_portfolios_to_mojgan_portfolios_with_transfer_analysis(
+#     customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df, transfer_threshold_miles=20
+# )
+# tagging_results_with_transfer.to_csv('portfolio_tagging_results_with_transfer.csv', index=False)
