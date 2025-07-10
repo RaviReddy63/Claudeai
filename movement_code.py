@@ -17,12 +17,14 @@ def distance_miles(lat1, lon1, lat2, lon2):
     
     return 3959 * c  # Earth radius in miles
 
-def add_movement_analysis(tagging_results, customer_au_assignments, branch_df):
-    """Simple movement analysis"""
+def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, CLIENT_GROUPS_DF_NEW):
+    """Simple movement analysis with average distance calculations"""
     
     results = tagging_results.copy()
     results['MAX_CUSTOMER_DISTANCE_MILES'] = 0
     results['MOVEMENT'] = 'NO MOVEMENT REQUIRED'
+    results['NEW_AVG_DIST_FROM_CUSTS'] = 0
+    results['CURRENT_AVG_DIST_FROM_CUSTS'] = 0
     
     for i, row in results.iterrows():
         tagged_to_au = row['TAGGED_TO_AU']
@@ -41,18 +43,42 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df):
         branch_lat = branch.iloc[0]['BRANCH_LAT_NUM']
         branch_lon = branch.iloc[0]['BRANCH_LON_NUM']
         
-        # Get customers for this AU with their coordinates
-        customers = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] == new_au]
+        # Get customers for NEW_AU from customer_au_assignments
+        new_au_customers = customer_au_assignments[customer_au_assignments['ASSIGNED_AU'] == new_au]
         
-        # Calculate distances to all customers
+        # Calculate distances to all customers for NEW_AU (for max distance calculation)
         max_distance = 0
-        for _, customer_row in customers.iterrows():
+        new_au_distances = []
+        for _, customer_row in new_au_customers.iterrows():
             cust_lat = customer_row['LAT_NUM']
             cust_lon = customer_row['LON_NUM']
             
             distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
+            new_au_distances.append(distance)
             if distance > max_distance:
                 max_distance = distance
+        
+        # Calculate average distance for NEW_AU
+        if new_au_distances:
+            new_avg_distance = np.mean(new_au_distances)
+            results.at[i, 'NEW_AVG_DIST_FROM_CUSTS'] = new_avg_distance
+        
+        # Get customers for TAGGED_TO_AU from CLIENT_GROUPS_DF_NEW
+        tagged_au_customers = CLIENT_GROUPS_DF_NEW[CLIENT_GROUPS_DF_NEW['ASSIGNED_AU'] == tagged_to_au]
+        
+        # Calculate distances to all customers for TAGGED_TO_AU (current assignment)
+        current_au_distances = []
+        for _, customer_row in tagged_au_customers.iterrows():
+            cust_lat = customer_row['LAT_NUM']
+            cust_lon = customer_row['LON_NUM']
+            
+            distance = distance_miles(branch_lat, branch_lon, cust_lat, cust_lon)
+            current_au_distances.append(distance)
+        
+        # Calculate average distance for TAGGED_TO_AU
+        if current_au_distances:
+            current_avg_distance = np.mean(current_au_distances)
+            results.at[i, 'CURRENT_AVG_DIST_FROM_CUSTS'] = current_avg_distance
         
         # Update results
         results.at[i, 'MAX_CUSTOMER_DISTANCE_MILES'] = max_distance
@@ -62,4 +88,4 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df):
     return results
 
 # Usage:
-# results_with_movement = add_movement_analysis(tagging_results, customer_au_assignments, branch_df)
+# results_with_movement = add_movement_analysis(tagging_results, customer_au_assignments, branch_df, CLIENT_GROUPS_DF_NEW)
