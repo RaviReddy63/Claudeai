@@ -28,6 +28,11 @@ def add_movement_analysis(tagging_results, customer_au_assignments, branch_df, C
         tagged_to_au = row['TAGGED_TO_AU']
         new_au = row['NEW_AU']
         
+        # If tagged_to_au is null, set movement to null
+        if pd.isna(tagged_to_au):
+            results.at[i, 'MOVEMENT'] = None
+            continue
+        
         # Get branch coordinates
         branch = branch_df[branch_df['BRANCH_AU'] == tagged_to_au]
         if len(branch) == 0:
