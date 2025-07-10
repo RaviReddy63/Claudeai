@@ -393,7 +393,7 @@ def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assign
         new_type = row['NEW_TYPE']
         tagged_au = row['TAGGED_TO_AU']
         
-        # Get customers for this new portfolio
+        # Get customers for this new portfolio (use original data to include reserved portfolios)
         new_customers = customer_au_assignments[
             (customer_au_assignments['ASSIGNED_AU'] == new_au) &
             (customer_au_assignments['TYPE'] == new_type)
@@ -412,8 +412,11 @@ def add_transfer_analysis_to_tagging_results(tagging_results, customer_au_assign
         elif max_distance is not None and max_distance > transfer_threshold_miles:
             results_with_transfer.at[idx, 'MOVEMENT'] = 'TRANSFER NEEDED'
         else:
-            # For cases where distance couldn't be calculated (e.g., centralized portfolios)
-            results_with_transfer.at[idx, 'MOVEMENT'] = 'UNABLE TO DETERMINE'
+            # For cases where distance couldn't be calculated (e.g., centralized portfolios, reserved portfolios)
+            if row['TAGGING_CRITERIA'] == 'SPECIAL_RESERVATION':
+                results_with_transfer.at[idx, 'MOVEMENT'] = 'RESERVED - NO ANALYSIS'
+            else:
+                results_with_transfer.at[idx, 'MOVEMENT'] = 'UNABLE TO DETERMINE'
     
     # Print summary
     movement_summary = results_with_transfer['MOVEMENT'].value_counts()
