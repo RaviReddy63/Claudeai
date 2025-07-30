@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
@@ -374,110 +373,118 @@ def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, 
     
     return customers_clean, pd.DataFrame(final_clusters)
 
-def assign_clusters_to_branches_vectorized(cluster_info, branch_df):
-    """Vectorized cluster to branch assignment"""
+def assign_clusters_to_branches_unique(cluster_info, branch_df, used_branches=None):
+    """
+    Assign clusters to branches ensuring each branch can only be assigned to ONE cluster
+    """
     if len(cluster_info) == 0:
         return pd.DataFrame()
     
+    if used_branches is None:
+        used_branches = set()
+    
     # Get cluster centroids and branch coordinates
     cluster_coords = cluster_info[['centroid_lat', 'centroid_lon']].values.astype(np.float64)
-    branch_coords = branch_df[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
+    
+    # Filter out already used branches
+    available_branches = branch_df[~branch_df['BRANCH_AU'].isin(used_branches)].copy()
+    
+    if len(available_branches) == 0:
+        print("No available branches left for assignment!")
+        return pd.DataFrame()
+    
+    branch_coords = available_branches[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
     
     # Compute distance matrix
     distance_matrix = compute_distance_matrix(cluster_coords, branch_coords)
     
-    # Find nearest branch for each cluster
-    nearest_branch_indices = np.argmin(distance_matrix, axis=1)
-    min_distances = np.min(distance_matrix, axis=1)
-    
     cluster_assignments = []
-    for i, cluster in cluster_info.iterrows():
-        branch_idx = nearest_branch_indices[i]
-        assigned_branch = branch_df.iloc[branch_idx]['BRANCH_AU']
-        distance = min_distances[i]
+    assigned_branch_indices = set()
+    
+    # Sort clusters by their minimum distance to any available branch
+    cluster_min_distances = np.min(distance_matrix, axis=1)
+    cluster_order = np.argsort(cluster_min_distances)
+    
+    # Assign clusters in order of their minimum distance
+    for cluster_idx in cluster_order:
+        cluster = cluster_info.iloc[cluster_idx]
+        
+        # Find the closest available branch for this cluster
+        available_branch_mask = np.ones(len(available_branches), dtype=bool)
+        available_branch_mask[list(assigned_branch_indices)] = False
+        
+        if not np.any(available_branch_mask):
+            print(f"No more available branches for cluster {cluster['cluster_id']}")
+            continue
+        
+        # Get distances to available branches only
+        cluster_distances = distance_matrix[cluster_idx, :]
+        cluster_distances[~available_branch_mask] = np.inf
+        
+        # Find the closest available branch
+        closest_branch_idx = np.argmin(cluster_distances)
+        
+        if cluster_distances[closest_branch_idx] == np.inf:
+            print(f"No available branch for cluster {cluster['cluster_id']}")
+            continue
+        
+        # Assign this cluster to the closest available branch
+        assigned_branch = available_branches.iloc[closest_branch_idx]['BRANCH_AU']
+        distance = cluster_distances[closest_branch_idx]
         
         cluster_assignments.append({
             'cluster_id': cluster['cluster_id'],
             'assigned_branch': assigned_branch,
             'cluster_to_branch_distance': distance
         })
+        
+        # Mark this branch as used
+        assigned_branch_indices.add(closest_branch_idx)
+        used_branches.add(assigned_branch)
     
     return pd.DataFrame(cluster_assignments)
 
-def greedy_assign_customers_to_branches(clustered_customers, cluster_assignments, branch_df, max_distance=20, max_customers_per_branch=225):
+def assign_customers_to_cluster_branch(clustered_customers, cluster_assignments):
     """
-    Fast greedy assignment instead of Hungarian algorithm
-    Assigns customers to nearest available branch with capacity
+    Assign customers directly to their cluster's assigned branch (no cross-assignment)
     """
+    if len(cluster_assignments) == 0:
+        return {}, list(clustered_customers.index)
     
-    identified_branches = cluster_assignments['assigned_branch'].unique()
-    identified_branch_coords = branch_df[branch_df['BRANCH_AU'].isin(identified_branches)].copy()
-    
-    customers_to_assign = clustered_customers[clustered_customers['cluster'] != -1].copy()
-    
-    if len(customers_to_assign) == 0 or len(identified_branch_coords) == 0:
-        return {}, list(customers_to_assign.index)
-    
-    # Pre-compute distance matrix
-    customer_coords = customers_to_assign[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
-    branch_coords = identified_branch_coords[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
-    
-    distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
-    
-    # Apply distance constraint
-    distance_matrix[distance_matrix > max_distance] = np.inf
-    
-    customer_indices = list(customers_to_assign.index)
-    branch_aus = list(identified_branch_coords['BRANCH_AU'])
-    
-    # Initialize branch capacities
-    branch_capacity = {branch_au: max_customers_per_branch for branch_au in branch_aus}
-    customer_assignments = {branch_au: [] for branch_au in branch_aus}
+    customer_assignments = {}
     unassigned_customers = []
     
-    # Create list of (customer_idx, branch_idx, distance) sorted by distance
-    assignment_candidates = []
-    for i, customer_idx in enumerate(customer_indices):
-        for j, branch_au in enumerate(branch_aus):
-            distance = distance_matrix[i, j]
-            if distance < np.inf:  # Only consider valid assignments
-                assignment_candidates.append((i, customer_idx, j, branch_au, distance))
+    # Create mapping from cluster_id to assigned_branch
+    cluster_to_branch = {}
+    for _, assignment in cluster_assignments.iterrows():
+        cluster_to_branch[assignment['cluster_id']] = assignment['assigned_branch']
     
-    # Sort by distance (greedy: assign closest first)
-    assignment_candidates.sort(key=lambda x: x[4])
-    
-    # Assign customers greedily
-    assigned_customers = set()
-    
-    for customer_i, customer_idx, branch_j, branch_au, distance in assignment_candidates:
-        # Skip if customer already assigned
-        if customer_idx in assigned_customers:
+    # Process each customer based on their cluster assignment
+    for idx, customer in clustered_customers.iterrows():
+        cluster_id = customer['cluster']
+        
+        if cluster_id == -1:
+            # Customer was never assigned to a cluster
+            unassigned_customers.append(idx)
             continue
         
-        # Skip if branch is at capacity
-        if branch_capacity[branch_au] <= 0:
+        if cluster_id not in cluster_to_branch:
+            # Cluster was not assigned to any branch
+            unassigned_customers.append(idx)
             continue
         
-        # Assign customer to branch
-        customer_assignments[branch_au].append({
-            'customer_idx': customer_idx,
-            'distance': distance
+        # Assign customer to their cluster's designated branch
+        assigned_branch = cluster_to_branch[cluster_id]
+        
+        if assigned_branch not in customer_assignments:
+            customer_assignments[assigned_branch] = []
+        
+        # Calculate distance to assigned branch (for record keeping)
+        # This will be calculated later in the main function
+        customer_assignments[assigned_branch].append({
+            'customer_idx': idx,
+            'distance': 0  # Will be calculated later
         })
-        
-        assigned_customers.add(customer_idx)
-        branch_capacity[branch_au] -= 1
-    
-    # Find unassigned customers
-    for customer_idx in customer_indices:
-        if customer_idx not in assigned_customers:
-            unassigned_customers.append(customer_idx)
-    
-    # Remove empty branches
-    customer_assignments = {k: v for k, v in customer_assignments.items() if v}
-    
-    # Sort customers within each branch by distance
-    for branch_au in customer_assignments:
-        customer_assignments[branch_au].sort(key=lambda x: x['distance'])
     
     return customer_assignments, unassigned_customers
 
@@ -567,13 +574,14 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     return proximity_results, remaining_unassigned, updated_customer_assignments
 
 def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, branch_df, 
-                                                     min_size=200, max_size=240, max_radius=100):
+                                                     used_branches, min_size=200, max_size=240, max_radius=100):
     """
     Create centralized clusters WITH radius constraint and assign to branches
+    Ensures no branch is used twice
     """
     
     if len(unassigned_customers_df) == 0:
-        return [], []
+        return [], [], used_branches
     
     # Step 1: Create clusters with radius constraint
     clustered_centralized, centralized_cluster_info = constrained_clustering_with_radius(
@@ -584,10 +592,14 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
     final_unassigned = []
     
     if len(centralized_cluster_info) > 0:
-        # Step 2: Assign clusters to branches
-        cluster_assignments = assign_clusters_to_branches_vectorized(
-            centralized_cluster_info, branch_df
+        # Step 2: Assign clusters to branches (ensuring no duplicates)
+        cluster_assignments = assign_clusters_to_branches_unique(
+            centralized_cluster_info, branch_df, used_branches
         )
+        
+        # Update used_branches
+        for _, assignment in cluster_assignments.iterrows():
+            used_branches.add(assignment['assigned_branch'])
         
         # Step 3: Assign customers within clusters to their assigned branches
         for _, assignment in cluster_assignments.iterrows():
@@ -636,7 +648,158 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
     else:
         final_unassigned = list(unassigned_customers_df.index)
     
-    return centralized_results, final_unassigned
+    return centralized_results, final_unassigned, used_branches
+
+def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neighbors=3):
+    """
+    Repeatedly optimize INMARKET portfolios until no more beneficial reassignments can be made
+    """
+    
+    optimized_result = result_df.copy()
+    iteration = 0
+    
+    while True:
+        iteration += 1
+        
+        inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        if len(inmarket_customers) == 0:
+            break
+        
+        # Group customers by assigned AU
+        portfolio_groups = inmarket_customers.groupby('ASSIGNED_AU')
+        outlier_customers = []
+        
+        # Step 1: Identify outlier customers (3x median distance)
+        for au, group in portfolio_groups:
+            if len(group) <= 1:
+                continue
+                
+            distances = group['DISTANCE_TO_AU'].values
+            median_distance = np.median(distances)
+            threshold = 3 * median_distance
+            
+            outliers = group[group['DISTANCE_TO_AU'] > threshold]
+            if len(outliers) > 0:
+                for idx, customer in outliers.iterrows():
+                    outlier_customers.append({
+                        'customer_idx': idx,
+                        'current_au': au,
+                        'current_distance': customer['DISTANCE_TO_AU'],
+                        'customer_data': customer
+                    })
+        
+        if not outlier_customers:
+            break
+        
+        # Get all INMARKET AUs and their coordinates
+        inmarket_aus = inmarket_customers['ASSIGNED_AU'].unique()
+        au_coords = []
+        au_list = []
+        
+        for au in inmarket_aus:
+            branch_coord = branch_df[branch_df['BRANCH_AU'] == au]
+            if len(branch_coord) > 0:
+                au_coords.append([branch_coord.iloc[0]['BRANCH_LAT_NUM'], branch_coord.iloc[0]['BRANCH_LON_NUM']])
+                au_list.append(au)
+        
+        au_coords = np.array(au_coords, dtype=np.float64)
+        
+        # Track current portfolio sizes
+        portfolio_sizes = inmarket_customers['ASSIGNED_AU'].value_counts().to_dict()
+        
+        iteration_improvements = 0
+        
+        # Step 2: Process each outlier customer
+        for outlier in outlier_customers:
+            customer_coord = np.array([[outlier['customer_data']['LAT_NUM'], outlier['customer_data']['LON_NUM']]], dtype=np.float64)
+            
+            # Calculate distances to all AUs
+            distances_to_aus = compute_distance_matrix(customer_coord, au_coords)[0]
+            
+            # Find k nearest AUs
+            nearest_indices = np.argsort(distances_to_aus)[:k_neighbors]
+            
+            best_reassignment = None
+            best_improvement = 0
+            
+            for idx in nearest_indices:
+                target_au = au_list[idx]
+                target_distance = distances_to_aus[idx]
+                
+                if target_au == outlier['current_au']:
+                    continue
+                
+                current_improvement = outlier['current_distance'] - target_distance
+                
+                if current_improvement <= 0:
+                    continue
+                
+                # Check if target portfolio has capacity
+                if portfolio_sizes.get(target_au, 0) < 250:
+                    if current_improvement > best_improvement:
+                        best_reassignment = {
+                            'type': 'direct',
+                            'target_au': target_au,
+                            'target_distance': target_distance,
+                            'improvement': current_improvement
+                        }
+                        best_improvement = current_improvement
+                
+                # Check for trade opportunity
+                elif portfolio_sizes.get(target_au, 0) == 250:
+                    target_portfolio = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == target_au]
+                    target_farthest_idx = target_portfolio['DISTANCE_TO_AU'].idxmax()
+                    target_farthest = target_portfolio.loc[target_farthest_idx]
+                    
+                    # Calculate trade benefit
+                    current_au_coord = branch_df[branch_df['BRANCH_AU'] == outlier['current_au']]
+                    if len(current_au_coord) > 0:
+                        trade_distance = haversine_distance_vectorized(
+                            target_farthest['LAT_NUM'], target_farthest['LON_NUM'],
+                            current_au_coord.iloc[0]['BRANCH_LAT_NUM'], current_au_coord.iloc[0]['BRANCH_LON_NUM']
+                        )
+                        
+                        total_trade_improvement = (outlier['current_distance'] - target_distance) + (target_farthest['DISTANCE_TO_AU'] - trade_distance)
+                        
+                        if total_trade_improvement > best_improvement:
+                            best_reassignment = {
+                                'type': 'trade',
+                                'target_au': target_au,
+                                'target_distance': target_distance,
+                                'trade_customer_idx': target_farthest_idx,
+                                'trade_distance': trade_distance,
+                                'improvement': total_trade_improvement
+                            }
+                            best_improvement = total_trade_improvement
+            
+            # Execute best reassignment
+            if best_reassignment and best_improvement > 0:
+                if best_reassignment['type'] == 'direct':
+                    # Direct reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    portfolio_sizes[outlier['current_au']] -= 1
+                    portfolio_sizes[best_reassignment['target_au']] = portfolio_sizes.get(best_reassignment['target_au'], 0) + 1
+                    
+                elif best_reassignment['type'] == 'trade':
+                    # Trade reassignment
+                    optimized_result.loc[outlier['customer_idx'], 'ASSIGNED_AU'] = best_reassignment['target_au']
+                    optimized_result.loc[outlier['customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['target_distance']
+                    
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'ASSIGNED_AU'] = outlier['current_au']
+                    optimized_result.loc[best_reassignment['trade_customer_idx'], 'DISTANCE_TO_AU'] = best_reassignment['trade_distance']
+                
+                iteration_improvements += 1
+                
+                # Update inmarket_customers for subsequent iterations within this loop
+                inmarket_customers = optimized_result[optimized_result['TYPE'] == 'INMARKET'].copy()
+        
+        # If no improvements were made in this iteration, we've converged
+        if iteration_improvements == 0:
+            break
+    
+    return optimized_result
 
 def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=50):
     """
@@ -844,11 +1007,8 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
         # Sort by distance (closest first)
         candidate_data.sort(key=lambda x: x['distance'])
         
-        # Fixed: Replace min() with if statement
-        if needed_customers <= len(candidate_data):
-            customers_to_assign = needed_customers
-        else:
-            customers_to_assign = len(candidate_data)
+        # Assign customers up to needed amount
+        customers_to_assign = min(needed_customers, len(candidate_data))
         
         for i in range(customers_to_assign):
             candidate = candidate_data[i]
@@ -883,13 +1043,16 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
     
     return updated_result, remaining_unassigned
 
-def enhanced_customer_au_assignment_without_step6_optimization(customer_df, branch_df):
+def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
     """
-    Enhanced main function with two INMARKET iterations and centralized portfolios
-    WITHOUT Step 6 optimization that eliminates portfolios
+    Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
+    Includes Step 6 optimization
     """
     
     print(f"Starting enhanced assignment with {len(customer_df)} customers and {len(branch_df)} branches")
+    
+    # Track used branches across all assignments
+    used_branches = set()
     
     # Step 1: Create first INMARKET clusters (20-mile radius, max_size=225)
     print("Step 1: Creating first INMARKET clusters (20-mile radius)...")
@@ -903,23 +1066,37 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
     if len(cluster_info) > 0:
         print(f"Created {len(cluster_info)} first INMARKET clusters")
         
-        # Step 2: Assign clusters to branches
-        print("Step 2: Assigning first INMARKET clusters to branches...")
-        cluster_assignments = assign_clusters_to_branches_vectorized(cluster_info, branch_df)
+        # Step 2: Assign clusters to branches (ensuring unique assignment)
+        print("Step 2: Assigning first INMARKET clusters to branches (unique assignment)...")
+        cluster_assignments = assign_clusters_to_branches_unique(cluster_info, branch_df, used_branches)
         
-        # Step 3: Use greedy assignment for customer-AU assignment
-        print("Step 3: Using greedy assignment for first INMARKET customer-AU assignment...")
-        customer_assignments, unassigned = greedy_assign_customers_to_branches(
-            clustered_customers, cluster_assignments, branch_df
+        # Update used branches
+        for _, assignment in cluster_assignments.iterrows():
+            used_branches.add(assignment['assigned_branch'])
+        
+        print(f"Assigned {len(cluster_assignments)} clusters to unique branches")
+        
+        # Step 3: Assign customers to their cluster's designated branch
+        print("Step 3: Assigning customers to their cluster's designated branch...")
+        customer_assignments, unassigned = assign_customers_to_cluster_branch(
+            clustered_customers, cluster_assignments
         )
         
-        # Create first INMARKET results
+        # Calculate actual distances for assigned customers
         for branch_au, customers in customer_assignments.items():
+            branch_coord = branch_df[branch_df['BRANCH_AU'] == branch_au].iloc[0]
+            
             for customer in customers:
                 customer_idx = customer['customer_idx']
                 customer_data = customer_df.loc[customer_idx]
                 
-                distance_value = customer.get('distance', 0)
+                # Calculate distance to assigned branch
+                distance = haversine_distance_vectorized(
+                    customer_data['LAT_NUM'], customer_data['LON_NUM'],
+                    branch_coord['BRANCH_LAT_NUM'], branch_coord['BRANCH_LON_NUM']
+                )
+                
+                customer['distance'] = distance
                 
                 inmarket_results.append({
                     'ECN': customer_data['ECN'],
@@ -928,16 +1105,11 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
                     'LAT_NUM': customer_data['LAT_NUM'],
                     'LON_NUM': customer_data['LON_NUM'],
                     'ASSIGNED_AU': branch_au,
-                    'DISTANCE_TO_AU': distance_value,
+                    'DISTANCE_TO_AU': distance,
                     'TYPE': 'INMARKET'
                 })
         
         unassigned_customer_indices.extend(unassigned)
-    
-    # Add customers that were never assigned to any cluster
-    never_assigned = clustered_customers[clustered_customers['cluster'] == -1].index.tolist()
-    unassigned_customer_indices.extend(never_assigned)
-    unassigned_customer_indices = list(set(unassigned_customer_indices))
     
     print(f"Total unassigned customers after first INMARKET: {len(unassigned_customer_indices)}")
     
@@ -990,21 +1162,35 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
         if len(cluster_info_2) > 0:
             print(f"Created {len(cluster_info_2)} second INMARKET clusters")
             
-            # Assign second iteration clusters to branches
-            cluster_assignments_2 = assign_clusters_to_branches_vectorized(cluster_info_2, branch_df)
+            # Assign second iteration clusters to branches (ensuring unique assignment)
+            cluster_assignments_2 = assign_clusters_to_branches_unique(cluster_info_2, branch_df, used_branches)
             
-            # Use greedy assignment for second iteration
-            customer_assignments_2, unassigned_2 = greedy_assign_customers_to_branches(
-                clustered_customers_2, cluster_assignments_2, branch_df
+            # Update used branches
+            for _, assignment in cluster_assignments_2.iterrows():
+                used_branches.add(assignment['assigned_branch'])
+            
+            print(f"Assigned {len(cluster_assignments_2)} second INMARKET clusters to unique branches")
+            
+            # Assign customers to their cluster's designated branch
+            customer_assignments_2, unassigned_2 = assign_customers_to_cluster_branch(
+                clustered_customers_2, cluster_assignments_2
             )
             
-            # Create second INMARKET results
+            # Calculate actual distances for second iteration customers
             for branch_au, customers in customer_assignments_2.items():
+                branch_coord = branch_df[branch_df['BRANCH_AU'] == branch_au].iloc[0]
+                
                 for customer in customers:
                     customer_idx = customer['customer_idx']
                     customer_data = remaining_customers_df.loc[customer_idx]
                     
-                    distance_value = customer.get('distance', 0)
+                    # Calculate distance to assigned branch
+                    distance = haversine_distance_vectorized(
+                        customer_data['LAT_NUM'], customer_data['LON_NUM'],
+                        branch_coord['BRANCH_LAT_NUM'], branch_coord['BRANCH_LON_NUM']
+                    )
+                    
+                    customer['distance'] = distance
                     
                     second_inmarket_results.append({
                         'ECN': customer_data['ECN'],
@@ -1013,36 +1199,37 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
                         'LAT_NUM': customer_data['LAT_NUM'],
                         'LON_NUM': customer_data['LON_NUM'],
                         'ASSIGNED_AU': branch_au,
-                        'DISTANCE_TO_AU': distance_value,
+                        'DISTANCE_TO_AU': distance,
                         'TYPE': 'INMARKET'
                     })
             
             # Update unassigned list
-            never_assigned_2 = clustered_customers_2[clustered_customers_2['cluster'] == -1].index.tolist()
-            unassigned_after_second_inmarket = list(set(unassigned_2 + never_assigned_2))
+            unassigned_after_second_inmarket = list(set(unassigned_2))
         else:
             unassigned_after_second_inmarket = unassigned_after_proximity.copy()
     
-    # Combine all results initially (before balancing and filling)
+    # Combine all results initially
     all_results = inmarket_results + proximity_results + second_inmarket_results
     result_df = pd.DataFrame(all_results)
     
-    # SKIP Step 6: Optimize INMARKET portfolios until convergence (THIS WAS ELIMINATED)
-    print("Skipping Step 6: Portfolio optimization that eliminates portfolios")
-    
-    # Step 7: Balance INMARKET portfolios to minimum size (move customers between portfolios)
+    # Step 6: Optimize INMARKET portfolios until convergence
     if len(result_df) > 0:
-        print("Step 7: Balancing INMARKET portfolios by moving customers between them...")
+        print("Step 6: Optimizing INMARKET portfolios...")
+        result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
+    
+    # Step 7: Balance INMARKET portfolios to minimum size
+    if len(result_df) > 0:
+        print("Step 7: Balancing INMARKET portfolios...")
         result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
     
-    # Step 8: Fill remaining undersized portfolios from unassigned customers (up to 40 miles)
+    # Step 8: Fill remaining undersized portfolios from unassigned customers
     if len(result_df) > 0 and unassigned_after_second_inmarket:
-        print("Step 8: Filling undersized INMARKET portfolios from unassigned customers (up to 40 miles)...")
+        print("Step 8: Filling undersized INMARKET portfolios...")
         result_df, unassigned_after_second_inmarket = fill_undersized_portfolios_from_unassigned(
             result_df, unassigned_after_second_inmarket, customer_df, branch_df, min_size=200, max_radius=40
         )
     
-    # Step 9: Create CENTRALIZED clusters WITH radius constraint
+    # Step 9: Create CENTRALIZED clusters
     centralized_results = []
     final_unassigned = []
     
@@ -1050,21 +1237,22 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
         print("Step 9: Creating CENTRALIZED clusters...")
         remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
-        centralized_results, final_unassigned = create_centralized_clusters_with_radius_and_assign(
-            remaining_unassigned_df, branch_df, min_size=200, max_size=240, max_radius=100
+        centralized_results, final_unassigned, used_branches = create_centralized_clusters_with_radius_and_assign(
+            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=100
         )
     
     # Combine all results
-    all_results = centralized_results
-    if len(all_results) > 0:
-        result_df = pd.concat([result_df, pd.DataFrame(all_results)], ignore_index=True)
+    if len(centralized_results) > 0:
+        result_df = pd.concat([result_df, pd.DataFrame(centralized_results)], ignore_index=True)
     
     # Print summary
-    print(f"\n=== FINAL SUMMARY WITHOUT STEP 6 OPTIMIZATION ===")
+    print(f"\n=== FINAL SUMMARY WITH UNIQUE BRANCH ASSIGNMENTS ===")
     print(f"Total customers processed: {len(customer_df)}")
+    print(f"Total branches used: {len(used_branches)}")
     if len(result_df) > 0:
         print(f"INMARKET customers assigned: {len(result_df[result_df['TYPE'] == 'INMARKET'])}")
         print(f"CENTRALIZED customers assigned: {len(result_df[result_df['TYPE'] == 'CENTRALIZED'])}")
+        print(f"Total unique portfolios created: {result_df['ASSIGNED_AU'].nunique()}")
     print(f"Final unassigned customers: {len(final_unassigned)}")
     print(f"Total assigned customers: {len(result_df)}")
     
@@ -1077,14 +1265,22 @@ def enhanced_customer_au_assignment_without_step6_optimization(customer_df, bran
         print("\nPortfolio Type Summary:")
         print(type_summary)
         
+        portfolio_summary = result_df.groupby('ASSIGNED_AU').agg({
+            'ECN': 'count',
+            'DISTANCE_TO_AU': 'mean',
+            'TYPE': 'first'
+        }).round(2)
+        portfolio_summary.columns = ['Customer_Count', 'Avg_Distance', 'Type']
+        print(f"\nIndividual Portfolio Summary:")
+        print(portfolio_summary)
+        
         print(f"\nOverall Distance Statistics:")
         print(f"Average distance to assigned AU: {result_df['DISTANCE_TO_AU'].mean():.2f} miles")
         print(f"Maximum distance to assigned AU: {result_df['DISTANCE_TO_AU'].max():.2f} miles")
-        print(f"Number of unique AUs used: {result_df['ASSIGNED_AU'].nunique()}")
     
     return result_df
 
 # Usage example:
-# Enhanced assignments with two INMARKET iterations and centralized portfolios WITHOUT Step 6 optimization
-# assignments = enhanced_customer_au_assignment_without_step6_optimization(customer_df, branch_df)
-# assignments.to_csv('customer_au_assignments_without_step6.csv', index=False)
+# Enhanced assignments ensuring each AU is assigned to only ONE cluster/portfolio
+# assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
+# assignments.to_csv('customer_au_assignments_unique_branches.csv', index=False)
