@@ -347,9 +347,11 @@ def tag_new_portfolios_to_custom_portfolios(customer_au_assignments, custom_au_b
                 'NEW_AU': new_au,
                 'NEW_TYPE': combo['new_type'],
                 'NEW_CUSTOMER_COUNT': combo['new_customer_count'],
-                'TAGGED_TO_AU': custom_au,
-                'TAGGED_TO_BANKER_ID': combo['custom_banker_id'],
                 'TAGGED_TO_PORTFOLIO': custom_portfolio_code if pd.notna(custom_portfolio_code) else '',
+                'TAGGED_TO_EMPLOYEE': combo['custom_banker_id'],  # Using BANKER_ID as employee
+                'TAGGED_TO_MANAGER': '',  # Will be filled from fallback if needed
+                'TAGGED_TO_DIRECTOR': '',  # Will be filled from fallback if needed
+                'TAGGED_TO_AU': custom_au,
                 'TAGGING_CRITERIA': 'CLOSEST_AU_DISTANCE',
                 'DISTANCE_MILES': combo['distance'],
                 'CUSTOMER_OVERLAP_COUNT': overlap_count,
@@ -386,9 +388,11 @@ def tag_new_portfolios_to_custom_portfolios(customer_au_assignments, custom_au_b
                 'NEW_AU': new_au,
                 'NEW_TYPE': new_type,
                 'NEW_CUSTOMER_COUNT': new_portfolio['CUSTOMER_COUNT'],
+                'TAGGED_TO_PORTFOLIO': '',  # No portfolio assignment
+                'TAGGED_TO_EMPLOYEE': '',  # No employee assignment
+                'TAGGED_TO_MANAGER': nearest_manager if nearest_manager else '',
+                'TAGGED_TO_DIRECTOR': nearest_director if nearest_director else '',
                 'TAGGED_TO_AU': '',
-                'TAGGED_TO_BANKER_ID': '',
-                'TAGGED_TO_PORTFOLIO': '',  
                 'TAGGING_CRITERIA': 'NEAREST_MANAGER_DIRECTOR_FALLBACK',
                 'DISTANCE_MILES': nearest_distance if not np.isinf(nearest_distance) else None,
                 'CUSTOMER_OVERLAP_COUNT': 0,
@@ -398,9 +402,7 @@ def tag_new_portfolios_to_custom_portfolios(customer_au_assignments, custom_au_b
                 'EXISTING_AVG_BANK_REVENUE': None,
                 'NEW_AVG_DEPOSIT_BAL': new_avg_deposit,
                 'NEW_AVG_GROSS_SALES': new_avg_gross_sales,
-                'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue,
-                'FALLBACK_MANAGER': nearest_manager if nearest_manager else '',
-                'FALLBACK_DIRECTOR': nearest_director if nearest_director else ''
+                'NEW_AVG_BANK_REVENUE': new_avg_bank_revenue
             })
     
     # Create results dataframe
