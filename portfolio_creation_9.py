@@ -1322,14 +1322,14 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Step 9: Create CENTRALIZED clusters
     centralized_results = []
-    final_unassigned = []
+    remaining_after_centralized = []
     
     if unassigned_after_second_inmarket:
         print("Step 9: Creating CENTRALIZED clusters...")
         remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
-        centralized_results, final_unassigned, used_branches = create_centralized_clusters_with_radius_and_assign(
-            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=100
+        centralized_results, remaining_after_centralized, used_branches = create_centralized_clusters_with_radius_and_assign(
+            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=150
         )
     
     # Step 10: Handle final unassigned customers as centralized portfolios
