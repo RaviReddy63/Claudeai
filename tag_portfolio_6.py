@@ -59,19 +59,30 @@ def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
         print(f"Error in distance calculation: {e}")
         return float('inf')
 
-def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch_df):
-    """Get existing portfolios under MOJGAN MADADI"""
+def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch_df, coverage=None):
+    """Get existing portfolios under MOJGAN MADADI, optionally filtered by coverage (state)"""
     # Clean the dataframes first
     active_portfolio_clean = active_portfolio_df.copy()
     active_portfolio_clean['DIRECTOR_NAME'] = active_portfolio_clean['DIRECTOR_NAME'].fillna('')
     active_portfolio_clean['ROLE_TYPE'] = active_portfolio_clean['ROLE_TYPE'].fillna('')
     active_portfolio_clean['ISACTIVE'] = pd.to_numeric(active_portfolio_clean['ISACTIVE'], errors='coerce').fillna(0)
+    active_portfolio_clean['COVERAGE'] = active_portfolio_clean['COVERAGE'].fillna('')
+    
+    # Base filter for MOJGAN MADADI portfolios
+    base_filter = (
+        (active_portfolio_clean['ISACTIVE'] == 1) & 
+        (active_portfolio_clean['DIRECTOR_NAME'] == 'MOJGAN MADADI')
+    )
+    
+    # Add coverage filter if specified
+    if coverage:
+        coverage_filter = active_portfolio_clean['COVERAGE'] == coverage
+        base_filter = base_filter & coverage_filter
+        print(f"Filtering existing portfolios by coverage: {coverage}")
     
     # IN MARKET portfolios
     existing_inmarket = active_portfolio_clean[
-        (active_portfolio_clean['ISACTIVE'] == 1) & 
-        (active_portfolio_clean['ROLE_TYPE'] == 'IN MARKET') &
-        (active_portfolio_clean['DIRECTOR_NAME'] == 'MOJGAN MADADI')
+        base_filter & (active_portfolio_clean['ROLE_TYPE'] == 'IN MARKET')
     ].copy()
     
     if len(existing_inmarket) > 0:
@@ -82,9 +93,7 @@ def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch
     
     # CENTRALIZED portfolios
     existing_centralized = active_portfolio_clean[
-        (active_portfolio_clean['ISACTIVE'] == 1) & 
-        (active_portfolio_clean['ROLE_TYPE'] == 'CENTRALIZED') &
-        (active_portfolio_clean['DIRECTOR_NAME'] == 'MOJGAN MADADI')
+        base_filter & (active_portfolio_clean['ROLE_TYPE'] == 'CENTRALIZED')
     ].copy()
     
     # Get customer lists for ALL portfolios
@@ -120,19 +129,26 @@ def get_existing_portfolios_mojgan(active_portfolio_df, client_groups_df, branch
     
     return existing_inmarket, existing_centralized, portfolio_customers
 
-def get_all_existing_portfolios(active_portfolio_df, branch_df):
-    """Get ALL existing portfolios (not just MOJGAN MADADI) for distance-based manager/director assignment"""
+def get_all_existing_portfolios(active_portfolio_df, branch_df, coverage=None):
+    """Get ALL existing portfolios (not just MOJGAN MADADI) for distance-based manager/director assignment, optionally filtered by coverage"""
     # Clean the dataframes first
     active_portfolio_clean = active_portfolio_df.copy()
     active_portfolio_clean['DIRECTOR_NAME'] = active_portfolio_clean['DIRECTOR_NAME'].fillna('')
     active_portfolio_clean['MANAGER_NAME'] = active_portfolio_clean['MANAGER_NAME'].fillna('')
     active_portfolio_clean['ROLE_TYPE'] = active_portfolio_clean['ROLE_TYPE'].fillna('')
     active_portfolio_clean['ISACTIVE'] = pd.to_numeric(active_portfolio_clean['ISACTIVE'], errors='coerce').fillna(0)
+    active_portfolio_clean['COVERAGE'] = active_portfolio_clean['COVERAGE'].fillna('')
     
-    # Get all active portfolios
-    all_active_portfolios = active_portfolio_clean[
-        active_portfolio_clean['ISACTIVE'] == 1
-    ].copy()
+    # Base filter for active portfolios
+    base_filter = active_portfolio_clean['ISACTIVE'] == 1
+    
+    # Add coverage filter if specified
+    if coverage:
+        coverage_filter = active_portfolio_clean['COVERAGE'] == coverage
+        base_filter = base_filter & coverage_filter
+    
+    # Get all active portfolios (filtered by coverage if specified)
+    all_active_portfolios = active_portfolio_clean[base_filter].copy()
     
     if len(all_active_portfolios) > 0:
         all_active_portfolios = all_active_portfolios.merge(
@@ -256,10 +272,12 @@ def find_nearest_portfolio_for_manager_director(new_au, branch_df, all_portfolio
     
     return nearest_manager, nearest_director, min_distance
 
-def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df):
-    """Main function to tag new portfolios to existing MOJGAN MADADI portfolios using AU locations"""
+def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_portfolio_df, client_groups_df, branch_df, coverage=None):
+    """Main function to tag new portfolios to existing MOJGAN MADADI portfolios using AU locations, optionally filtered by coverage (state)"""
     
     print("=== TAGGING NEW PORTFOLIOS TO MOJGAN MADADI PORTFOLIOS ===")
+    if coverage:
+        print(f"Coverage Filter: {coverage}")
     
     # Get unique new portfolios with customer counts
     new_portfolios = get_unique_new_portfolios(customer_au_assignments)
@@ -268,16 +286,22 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     
     print(f"New portfolios: IN MARKET: {len(new_inmarket)}, CENTRALIZED: {len(new_centralized)}")
     
-    # Get existing Mojgan portfolios
+    # Get existing Mojgan portfolios (filtered by coverage if specified)
     existing_inmarket, existing_centralized, existing_portfolio_customers = get_existing_portfolios_mojgan(
-        active_portfolio_df, client_groups_df, branch_df
+        active_portfolio_df, client_groups_df, branch_df, coverage
     )
     
-    # Get ALL existing portfolios for distance-based manager/director assignment
-    all_existing_portfolios = get_all_existing_portfolios(active_portfolio_df, branch_df)
+    # Get ALL existing portfolios for distance-based manager/director assignment (filtered by coverage if specified)
+    all_existing_portfolios = get_all_existing_portfolios(active_portfolio_df, branch_df, coverage)
     
-    print(f"Existing MOJGAN MADADI portfolios: IN MARKET: {len(existing_inmarket)}, CENTRALIZED: {len(existing_centralized)}")
-    print(f"Total existing portfolios for distance calculation: {len(all_existing_portfolios)}")
+    print(f"Existing MOJGAN MADADI portfolios{f' in {coverage}' if coverage else ''}: IN MARKET: {len(existing_inmarket)}, CENTRALIZED: {len(existing_centralized)}")
+    print(f"Total existing portfolios{f' in {coverage}' if coverage else ''} for distance calculation: {len(all_existing_portfolios)}")
+    
+    # Check if we have existing portfolios to work with
+    if len(existing_inmarket) == 0 and len(existing_centralized) == 0:
+        print(f"WARNING: No existing MOJGAN MADADI portfolios found{f' in coverage {coverage}' if coverage else ''}!")
+        if len(all_existing_portfolios) == 0:
+            print(f"WARNING: No existing portfolios found{f' in coverage {coverage}' if coverage else ''} for manager/director assignment!")
     
     all_tags = []
     
@@ -311,6 +335,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                     'existing_manager': safe_get_value(existing_portfolio, 'MANAGER_NAME', ''),
                     'existing_director': safe_get_value(existing_portfolio, 'DIRECTOR_NAME', ''),
                     'existing_au': safe_get_value(existing_portfolio, 'AU', ''),
+                    'existing_coverage': safe_get_value(existing_portfolio, 'COVERAGE', ''),
                     'distance': float(distance) if not np.isinf(distance) else float('inf')
                 })
         
@@ -348,6 +373,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGED_TO_MANAGER': combo['existing_manager'],
                 'TAGGED_TO_DIRECTOR': combo['existing_director'],
                 'TAGGED_TO_AU': combo['existing_au'],
+                'TAGGED_TO_COVERAGE': combo['existing_coverage'],
                 'TAGGING_CRITERIA': 'CLOSEST_AU_DISTANCE',
                 'DISTANCE_MILES': combo['distance'],
                 'CUSTOMER_OVERLAP_COUNT': overlap_count,
@@ -422,6 +448,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                     'existing_employee': safe_get_value(existing_portfolio, 'EMPLOYEE_NAME', ''),
                     'existing_manager': safe_get_value(existing_portfolio, 'MANAGER_NAME', ''),
                     'existing_director': safe_get_value(existing_portfolio, 'DIRECTOR_NAME', ''),
+                    'existing_coverage': safe_get_value(existing_portfolio, 'COVERAGE', ''),
                     'overlap_count': overlap_count,
                     'existing_customers': existing_customers
                 })
@@ -450,6 +477,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGED_TO_MANAGER': combo['existing_manager'],
                 'TAGGED_TO_DIRECTOR': combo['existing_director'],
                 'TAGGED_TO_AU': 'N/A (CENTRALIZED)',
+                'TAGGED_TO_COVERAGE': combo['existing_coverage'],
                 'TAGGING_CRITERIA': 'MAX_CUSTOMER_OVERLAP',
                 'DISTANCE_MILES': None,
                 'CUSTOMER_OVERLAP_COUNT': combo['overlap_count'],
@@ -493,6 +521,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
                 'TAGGED_TO_MANAGER': nearest_manager if nearest_manager else '',
                 'TAGGED_TO_DIRECTOR': nearest_director if nearest_director else '',
                 'TAGGED_TO_AU': '',
+                'TAGGED_TO_COVERAGE': coverage if coverage else '',  # Use the input coverage filter
                 'TAGGING_CRITERIA': 'NEAREST_MANAGER_DIRECTOR_ONLY',
                 'DISTANCE_MILES': nearest_distance if not np.isinf(nearest_distance) else None,
                 'CUSTOMER_OVERLAP_COUNT': 0,
@@ -517,7 +546,7 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
     if len(tagging_results) > 0:
         tagged_portfolios = tagging_results[tagging_results['TAGGED_TO_PORTFOLIO'] != '']
         manager_director_only = tagging_results[tagging_results['TAGGING_CRITERIA'] == 'NEAREST_MANAGER_DIRECTOR_ONLY']
-        print(f"Tagged to MOJGAN MADADI portfolios: {len(tagged_portfolios)}")
+        print(f"Tagged to MOJGAN MADADI portfolios{f' in {coverage}' if coverage else ''}: {len(tagged_portfolios)}")
         print(f"Assigned nearest manager/director only: {len(manager_director_only)}")
         
         if len(tagged_portfolios) > 0:
@@ -529,9 +558,39 @@ def tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, active_port
         print(f"Tagged by AU distance (IN MARKET): {len(distance_tagged)}")
         print(f"Tagged by customer overlap (CENTRALIZED): {len(overlap_tagged)}")
         print(f"Assigned nearest manager/director only: {len(manager_director_only)}")
+        
+        if coverage:
+            print(f"All assignments filtered by coverage: {coverage}")
     
     return tagging_results
 
-# Usage:
-# tagging_results = tag_new_portfolios_to_mojgan_portfolios(customer_au_assignments, ACTIVE_PORTFOLIO, CLIENT_GROUPS_DF_NEW, branch_df)
+# Usage examples:
+
+# Example 1: Tag portfolios without coverage filter (original behavior)
+# tagging_results = tag_new_portfolios_to_mojgan_portfolios(
+#     customer_au_assignments, 
+#     ACTIVE_PORTFOLIO, 
+#     CLIENT_GROUPS_DF_NEW, 
+#     branch_df
+# )
+
+# Example 2: Tag portfolios with coverage filter for Florida
+# tagging_results_fl = tag_new_portfolios_to_mojgan_portfolios(
+#     customer_au_assignments, 
+#     ACTIVE_PORTFOLIO, 
+#     CLIENT_GROUPS_DF_NEW, 
+#     branch_df, 
+#     coverage='FL'
+# )
+
+# Example 3: Tag portfolios with coverage filter for Texas
+# tagging_results_tx = tag_new_portfolios_to_mojgan_portfolios(
+#     customer_au_assignments, 
+#     ACTIVE_PORTFOLIO, 
+#     CLIENT_GROUPS_DF_NEW, 
+#     branch_df, 
+#     coverage='TX'
+# )
+
+# Save results
 # tagging_results.to_csv('portfolio_tagging_results.csv', index=False)
