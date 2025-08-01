@@ -217,7 +217,7 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
     
     return customers_clean, pd.DataFrame(final_clusters)
 
-def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, max_radius=150):
+def constrained_clustering_with_radius(customer_df, min_size=200, max_size=240, max_radius=300):
     """
     Clustering with both size constraints AND radius constraint for centralized portfolios
     """
@@ -574,7 +574,7 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     return proximity_results, remaining_unassigned, updated_customer_assignments
 
 def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, branch_df, 
-                                                     used_branches, min_size=200, max_size=240, max_radius=150):
+                                                     used_branches, min_size=200, max_size=240, max_radius=300):
     """
     Create centralized clusters WITH radius constraint and assign to branches
     Ensures no branch is used twice
@@ -681,7 +681,7 @@ def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used
     
     # For each group, find the nearest available branch
     for group_idx, customer_group in enumerate(customer_groups):
-        if group_idx >= len(available_branches):
+        if len(available_branches) == 0:
             print(f"No more available branches for group {group_idx + 1}")
             continue
         
@@ -1329,7 +1329,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
         centralized_results, remaining_after_centralized, used_branches = create_centralized_clusters_with_radius_and_assign(
-            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=150
+            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=300
         )
     
     # Step 10: Handle final unassigned customers as centralized portfolios
