@@ -1043,6 +1043,97 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
     
     return updated_result, remaining_unassigned
 
+def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used_branches, max_size=250):
+    """
+    Create centralized portfolios for final unassigned customers without radius constraints
+    Split into groups of max_size, assign each group to nearest available branch
+    """
+    
+    if len(unassigned_customers_df) == 0:
+        return [], used_branches
+    
+    print(f"Creating final centralized portfolios for {len(unassigned_customers_df)} unassigned customers")
+    
+    final_centralized_results = []
+    customers_list = list(unassigned_customers_df.index)
+    
+    # Split customers into groups of max_size
+    customer_groups = []
+    for i in range(0, len(customers_list), max_size):
+        group = customers_list[i:i + max_size]
+        customer_groups.append(group)
+    
+    print(f"Created {len(customer_groups)} groups with sizes: {[len(group) for group in customer_groups]}")
+    
+    # Get available branches
+    available_branches = branch_df[~branch_df['BRANCH_AU'].isin(used_branches)].copy()
+    
+    if len(available_branches) < len(customer_groups):
+        print(f"Warning: Only {len(available_branches)} available branches for {len(customer_groups)} groups")
+        print("Some groups may not get assigned to branches")
+    
+    # For each group, find the nearest available branch
+    for group_idx, customer_group in enumerate(customer_groups):
+        if group_idx >= len(available_branches):
+            print(f"No more available branches for group {group_idx + 1}")
+            continue
+        
+        # Calculate centroid of customer group
+        group_customers = unassigned_customers_df.loc[customer_group]
+        group_centroid_lat = group_customers['LAT_NUM'].mean()
+        group_centroid_lon = group_customers['LON_NUM'].mean()
+        
+        # Find nearest available branch to group centroid
+        min_distance = float('inf')
+        best_branch = None
+        
+        for _, branch in available_branches.iterrows():
+            distance = haversine_distance_vectorized(
+                group_centroid_lat, group_centroid_lon,
+                branch['BRANCH_LAT_NUM'], branch['BRANCH_LON_NUM']
+            )
+            
+            if distance < min_distance:
+                min_distance = distance
+                best_branch = branch['BRANCH_AU']
+        
+        if best_branch is None:
+            print(f"Could not find available branch for group {group_idx + 1}")
+            continue
+        
+        # Assign all customers in this group to the selected branch
+        for customer_idx in customer_group:
+            customer_data = unassigned_customers_df.loc[customer_idx]
+            
+            # Calculate distance from customer to assigned branch
+            branch_data = branch_df[branch_df['BRANCH_AU'] == best_branch].iloc[0]
+            distance_to_branch = haversine_distance_vectorized(
+                customer_data['LAT_NUM'], customer_data['LON_NUM'],
+                branch_data['BRANCH_LAT_NUM'], branch_data['BRANCH_LON_NUM']
+            )
+            
+            final_centralized_results.append({
+                'ECN': customer_data['ECN'],
+                'BILLINGCITY': customer_data['BILLINGCITY'],
+                'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                'LAT_NUM': customer_data['LAT_NUM'],
+                'LON_NUM': customer_data['LON_NUM'],
+                'ASSIGNED_AU': best_branch,
+                'DISTANCE_TO_AU': distance_to_branch,
+                'TYPE': 'CENTRALIZED',
+                'GROUP_ID': group_idx
+            })
+        
+        # Mark branch as used
+        used_branches.add(best_branch)
+        
+        # Remove assigned branch from available branches
+        available_branches = available_branches[available_branches['BRANCH_AU'] != best_branch]
+        
+        print(f"Assigned group {group_idx + 1} ({len(customer_group)} customers) to branch {best_branch}")
+    
+    return final_centralized_results, used_branches
+
 def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
@@ -1241,9 +1332,26 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
             remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=240, max_radius=100
         )
     
+    # Step 10: Handle final unassigned customers as centralized portfolios
+    final_centralized_results = []
+    
+    if remaining_after_centralized:
+        print("Step 10: Creating final centralized portfolios for remaining unassigned customers...")
+        final_unassigned_df = customer_df.loc[remaining_after_centralized]
+        
+        final_centralized_results, used_branches = create_final_centralized_portfolios(
+            final_unassigned_df, branch_df, used_branches, max_size=250
+        )
+    
     # Combine all results
     if len(centralized_results) > 0:
         result_df = pd.concat([result_df, pd.DataFrame(centralized_results)], ignore_index=True)
+    
+    if len(final_centralized_results) > 0:
+        result_df = pd.concat([result_df, pd.DataFrame(final_centralized_results)], ignore_index=True)
+    
+    # Update final_unassigned to be empty since we assigned everyone
+    final_unassigned = []
     
     # Print summary
     print(f"\n=== FINAL SUMMARY WITH UNIQUE BRANCH ASSIGNMENTS ===")
