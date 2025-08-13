@@ -5,6 +5,20 @@ from sklearn.neighbors import BallTree
 import warnings
 warnings.filterwarnings('ignore')
 
+# Portfolio size configuration - centralized variables
+PORTFOLIO_CONFIG = {
+    'MIN_SIZE': 200,
+    'MAX_SIZE': 250,
+    'INITIAL_MAX_SIZE': 225,
+    'PROXIMITY_THRESHOLD': 20,
+    'MAX_RADIUS_FIRST': 20,
+    'MAX_RADIUS_SECOND': 40,
+    'CENTRALIZED_MAX_RADIUS': 300,
+    'REBALANCE_SEARCH_RADIUS': 50,
+    'FILL_SEARCH_RADIUS': 40,
+    'K_NEIGHBORS': 3
+}
+
 def haversine_distance_vectorized(lat1, lon1, lat2, lon2):
     """Vectorized haversine distance calculation in miles"""
     R = 3959  # Earth's radius in miles
@@ -91,8 +105,14 @@ def find_candidates_spatial(customer_coords, seed_coord, max_radius, ball_tree=N
     
     return np.array([]), np.array([])
 
-def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, max_radius=20):
+def constrained_clustering_optimized(customer_df, min_size=None, max_size=None, max_radius=None):
     """Optimized clustering with vectorized operations and spatial indexing"""
+    if min_size is None:
+        min_size = PORTFOLIO_CONFIG['MIN_SIZE']
+    if max_size is None:
+        max_size = PORTFOLIO_CONFIG['INITIAL_MAX_SIZE']
+    if max_radius is None:
+        max_radius = PORTFOLIO_CONFIG['MAX_RADIUS_FIRST']
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
     
@@ -217,10 +237,16 @@ def constrained_clustering_optimized(customer_df, min_size=200, max_size=225, ma
     
     return customers_clean, pd.DataFrame(final_clusters)
 
-def constrained_clustering_with_radius(customer_df, min_size=200, max_size=250, max_radius=300):
+def constrained_clustering_with_radius(customer_df, min_size=None, max_size=None, max_radius=None):
     """
     Clustering with both size constraints AND radius constraint for centralized portfolios
     """
+    if min_size is None:
+        min_size = PORTFOLIO_CONFIG['MIN_SIZE']
+    if max_size is None:
+        max_size = PORTFOLIO_CONFIG['MAX_SIZE']
+    if max_radius is None:
+        max_radius = PORTFOLIO_CONFIG['CENTRALIZED_MAX_RADIUS']
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
     
@@ -488,11 +514,15 @@ def assign_customers_to_cluster_branch(clustered_customers, cluster_assignments)
     
     return customer_assignments, unassigned_customers
 
-def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, customer_assignments, branch_df, proximity_threshold=20, max_portfolio_size=250):
+def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, customer_assignments, branch_df, proximity_threshold=None, max_portfolio_size=None):
     """
     Check if unassigned customers are within proximity of identified AUs
     Add them to existing portfolios up to max_portfolio_size
     """
+    if proximity_threshold is None:
+        proximity_threshold = PORTFOLIO_CONFIG['PROXIMITY_THRESHOLD']
+    if max_portfolio_size is None:
+        max_portfolio_size = PORTFOLIO_CONFIG['MAX_SIZE']
     
     if len(unassigned_customers_df) == 0 or not customer_assignments:
         return [], list(unassigned_customers_df.index), customer_assignments
@@ -574,11 +604,17 @@ def assign_proximity_customers_to_existing_portfolios(unassigned_customers_df, c
     return proximity_results, remaining_unassigned, updated_customer_assignments
 
 def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, branch_df, 
-                                                     used_branches, min_size=200, max_size=250, max_radius=300):
+                                                     used_branches, min_size=None, max_size=None, max_radius=None):
     """
     Create centralized clusters WITH radius constraint and assign to branches
     Ensures no branch is used twice
     """
+    if min_size is None:
+        min_size = PORTFOLIO_CONFIG['MIN_SIZE']
+    if max_size is None:
+        max_size = PORTFOLIO_CONFIG['MAX_SIZE']
+    if max_radius is None:
+        max_radius = PORTFOLIO_CONFIG['CENTRALIZED_MAX_RADIUS']
     
     if len(unassigned_customers_df) == 0:
         return [], [], used_branches
@@ -650,11 +686,13 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
     
     return centralized_results, final_unassigned, used_branches
 
-def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used_branches, max_size=250):
+def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used_branches, max_size=None):
     """
     Create centralized portfolios for final unassigned customers without radius constraints
     Split into groups of max_size, assign each group to nearest available branch
     """
+    if max_size is None:
+        max_size = PORTFOLIO_CONFIG['MAX_SIZE']
     
     if len(unassigned_customers_df) == 0:
         return [], used_branches
@@ -741,10 +779,12 @@ def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used
     
     return final_centralized_results, used_branches
 
-def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neighbors=3):
+def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neighbors=None):
     """
     Repeatedly optimize INMARKET portfolios until no more beneficial reassignments can be made
     """
+    if k_neighbors is None:
+        k_neighbors = PORTFOLIO_CONFIG['K_NEIGHBORS']
     
     optimized_result = result_df.copy()
     iteration = 0
@@ -825,8 +865,8 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
                 if current_improvement <= 0:
                     continue
                 
-                # Check if target portfolio has capacity (updated to 250)
-                if portfolio_sizes.get(target_au, 0) < 250:
+                # Check if target portfolio has capacity
+                if portfolio_sizes.get(target_au, 0) < PORTFOLIO_CONFIG['MAX_SIZE']:
                     if current_improvement > best_improvement:
                         best_reassignment = {
                             'type': 'direct',
@@ -836,8 +876,8 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
                         }
                         best_improvement = current_improvement
                 
-                # Check for trade opportunity (updated to 250)
-                elif portfolio_sizes.get(target_au, 0) == 250:
+                # Check for trade opportunity
+                elif portfolio_sizes.get(target_au, 0) == PORTFOLIO_CONFIG['MAX_SIZE']:
                     target_portfolio = inmarket_customers[inmarket_customers['ASSIGNED_AU'] == target_au]
                     target_farthest_idx = target_portfolio['DISTANCE_TO_AU'].idxmax()
                     target_farthest = target_portfolio.loc[target_farthest_idx]
@@ -892,10 +932,14 @@ def optimize_inmarket_portfolios_until_convergence(result_df, branch_df, k_neigh
     
     return optimized_result
 
-def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=50):
+def rebalance_portfolio_sizes(result_df, branch_df, min_size=None, search_radius=None):
     """
     Rebalance INMARKET portfolios by moving customers from oversized to undersized
     """
+    if min_size is None:
+        min_size = PORTFOLIO_CONFIG['MIN_SIZE']
+    if search_radius is None:
+        search_radius = PORTFOLIO_CONFIG['REBALANCE_SEARCH_RADIUS']
     
     # Work with a copy
     balanced_result = result_df.copy()
@@ -1022,10 +1066,14 @@ def rebalance_portfolio_sizes(result_df, branch_df, min_size=200, search_radius=
     
     return balanced_result
 
-def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_indices, customer_df, branch_df, min_size=200, max_radius=40):
+def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_indices, customer_df, branch_df, min_size=None, max_radius=None):
     """
     Fill undersized INMARKET portfolios by finding unassigned customers within radius
     """
+    if min_size is None:
+        min_size = PORTFOLIO_CONFIG['MIN_SIZE']
+    if max_radius is None:
+        max_radius = PORTFOLIO_CONFIG['FILL_SEARCH_RADIUS']
     
     if len(unassigned_customer_indices) == 0:
         return result_df, unassigned_customer_indices
@@ -1137,7 +1185,7 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
 def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
-    Updated with original portfolio size constraints: min_size=200, max_size=250
+    Uses centralized PORTFOLIO_CONFIG for all size constraints
     """
     
     print(f"Starting enhanced assignment with {len(customer_df)} customers and {len(branch_df)} branches")
@@ -1145,11 +1193,9 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     # Track used branches across all assignments
     used_branches = set()
     
-    # Step 1: Create first INMARKET clusters (20-mile radius, max_size=225)
-    print("Step 1: Creating first INMARKET clusters (20-mile radius)...")
-    clustered_customers, cluster_info = constrained_clustering_optimized(
-        customer_df, min_size=200, max_size=225, max_radius=20
-    )
+    # Step 1: Create first INMARKET clusters
+    print("Step 1: Creating first INMARKET clusters...")
+    clustered_customers, cluster_info = constrained_clustering_optimized(customer_df)
     
     inmarket_results = []
     unassigned_customer_indices = []
@@ -1231,8 +1277,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
         
         proximity_results, unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
-            unassigned_customers_df, customer_assignments, branch_df, 
-            proximity_threshold=20, max_portfolio_size=250
+            unassigned_customers_df, customer_assignments, branch_df
         )
     
     print(f"Total unassigned customers after proximity check: {len(unassigned_after_proximity)}")
@@ -1245,9 +1290,9 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     if unassigned_after_proximity:
         remaining_customers_df = customer_df.loc[unassigned_after_proximity]
         
-        # Create second iteration of INMARKET clusters with 40-mile radius
+        # Create second iteration of INMARKET clusters with larger radius
         clustered_customers_2, cluster_info_2 = constrained_clustering_optimized(
-            remaining_customers_df, min_size=200, max_size=225, max_radius=40
+            remaining_customers_df, max_radius=PORTFOLIO_CONFIG['MAX_RADIUS_SECOND']
         )
         
         if len(cluster_info_2) > 0:
@@ -1308,16 +1353,16 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         print("Step 6: Optimizing INMARKET portfolios...")
         result_df = optimize_inmarket_portfolios_until_convergence(result_df, branch_df)
     
-    # Step 7: Balance INMARKET portfolios to minimum size (200)
+    # Step 7: Balance INMARKET portfolios to minimum size
     if len(result_df) > 0:
         print("Step 7: Balancing INMARKET portfolios...")
-        result_df = rebalance_portfolio_sizes(result_df, branch_df, min_size=200)
+        result_df = rebalance_portfolio_sizes(result_df, branch_df)
     
     # Step 8: Fill remaining undersized portfolios from unassigned customers
     if len(result_df) > 0 and unassigned_after_second_inmarket:
         print("Step 8: Filling undersized INMARKET portfolios...")
         result_df, unassigned_after_second_inmarket = fill_undersized_portfolios_from_unassigned(
-            result_df, unassigned_after_second_inmarket, customer_df, branch_df, min_size=200, max_radius=40
+            result_df, unassigned_after_second_inmarket, customer_df, branch_df
         )
     
     # Step 9: Create CENTRALIZED clusters
@@ -1329,7 +1374,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
         
         centralized_results, remaining_after_centralized, used_branches = create_centralized_clusters_with_radius_and_assign(
-            remaining_unassigned_df, branch_df, used_branches, min_size=200, max_size=250, max_radius=300
+            remaining_unassigned_df, branch_df, used_branches
         )
     
     # Step 10: Handle final unassigned customers as centralized portfolios
@@ -1340,7 +1385,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         final_unassigned_df = customer_df.loc[remaining_after_centralized]
         
         final_centralized_results, used_branches = create_final_centralized_portfolios(
-            final_unassigned_df, branch_df, used_branches, max_size=250
+            final_unassigned_df, branch_df, used_branches
         )
     
     # Combine all results
@@ -1355,7 +1400,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Print summary
     print(f"\n=== FINAL SUMMARY WITH UPDATED PORTFOLIO SIZES ===")
-    print(f"Portfolio Size Constraints: Min=200, Max=250, Initial=200-225")
+    print(f"Portfolio Size Constraints: Min={PORTFOLIO_CONFIG['MIN_SIZE']}, Max={PORTFOLIO_CONFIG['MAX_SIZE']}, Initial={PORTFOLIO_CONFIG['MIN_SIZE']}-{PORTFOLIO_CONFIG['INITIAL_MAX_SIZE']}")
     print(f"Total customers processed: {len(customer_df)}")
     print(f"Total branches used: {len(used_branches)}")
     if len(result_df) > 0:
@@ -1386,9 +1431,9 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         # Portfolio size distribution
         portfolio_sizes = result_df.groupby('ASSIGNED_AU').size()
         print(f"\nPortfolio Size Distribution:")
-        print(f"Portfolios with < 200 customers: {len(portfolio_sizes[portfolio_sizes < 200])}")
-        print(f"Portfolios with 200-250 customers: {len(portfolio_sizes[(portfolio_sizes >= 200) & (portfolio_sizes <= 250)])}")
-        print(f"Portfolios with > 250 customers: {len(portfolio_sizes[portfolio_sizes > 250])}")
+        print(f"Portfolios with < {PORTFOLIO_CONFIG['MIN_SIZE']} customers: {len(portfolio_sizes[portfolio_sizes < PORTFOLIO_CONFIG['MIN_SIZE']])}")
+        print(f"Portfolios with {PORTFOLIO_CONFIG['MIN_SIZE']}-{PORTFOLIO_CONFIG['MAX_SIZE']} customers: {len(portfolio_sizes[(portfolio_sizes >= PORTFOLIO_CONFIG['MIN_SIZE']) & (portfolio_sizes <= PORTFOLIO_CONFIG['MAX_SIZE'])])}")
+        print(f"Portfolios with > {PORTFOLIO_CONFIG['MAX_SIZE']} customers: {len(portfolio_sizes[portfolio_sizes > PORTFOLIO_CONFIG['MAX_SIZE']])}")
         print(f"Average portfolio size: {portfolio_sizes.mean():.1f}")
         print(f"Min portfolio size: {portfolio_sizes.min()}")
         print(f"Max portfolio size: {portfolio_sizes.max()}")
@@ -1401,9 +1446,8 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     return result_df
 
 # Usage example:
-# Enhanced assignments with original portfolio size constraints
-# Min portfolio size: 200 customers
-# Max portfolio size: 250 customers  
-# Initial cluster size: 200-225 customers  
+# Enhanced assignments with centralized configuration
+# All portfolio sizes and parameters controlled by PORTFOLIO_CONFIG dictionary
+# To modify sizes, simply update the PORTFOLIO_CONFIG values at the top  
 # assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
 # assignments.to_csv('customer_au_assignments_updated_sizes.csv', index=False)
