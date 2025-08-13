@@ -1,3 +1,56 @@
+# Update used_branches
+        for _, assignment in cluster_assignments.iterrows():
+            used_branches.add(assignment['assigned_branch'])
+        
+        # Step 3: Assign customers within clusters to their assigned branches
+        for _, assignment in cluster_assignments.iterrows():
+            cluster_id = assignment['cluster_id']
+            assigned_branch = assignment['assigned_branch']
+            
+            # Get customers in this cluster
+            cluster_customers = clustered_centralized[
+                clustered_centralized['cluster'] == cluster_id
+            ]
+            
+            # Get branch coordinates for distance calculation
+            branch_coords = branch_df[
+                branch_df['BRANCH_AU'] == assigned_branch
+            ][['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].iloc[0]
+            
+            # Calculate distances from each customer to assigned branch
+            for idx, customer in cluster_customers.iterrows():
+                distance = haversine_distance_vectorized(
+                    customer['LAT_NUM'], customer['LON_NUM'],
+                    branch_coords['BRANCH_LAT_NUM'], branch_coords['BRANCH_LON_NUM']
+                )
+                
+                # Get original customer data
+                original_customer = unassigned_customers_df.loc[idx]
+                
+                centralized_results.append({
+                    'customer_idx': idx,
+                    'ECN': original_customer['ECN'],
+                    'BILLINGCITY': original_customer['BILLINGCITY'],
+                    'BILLINGSTATE': original_customer['BILLINGSTATE'],
+                    'LAT_NUM': original_customer['LAT_NUM'],
+                    'LON_NUM': original_customer['LON_NUM'],
+                    'ASSIGNED_AU': assigned_branch,
+                    'DISTANCE_TO_AU': distance,
+                    'TYPE': 'CENTRALIZED',
+                    'CLUSTER_ID': cluster_id
+                })
+        
+        # Find customers that couldn't be clustered
+        unassigned_centralized = clustered_centralized[
+            clustered_centralized['cluster'] == -1
+        ]
+        final_unassigned = list(unassigned_centralized.index)
+        
+    else:
+        final_unassigned = list(unassigned_customers_df.index)
+    
+    return centralized_results, final_unassigned, used_branches
+
 def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used_branches, max_size=210):
     """
     Create centralized portfolios for final unassigned customers without radius constraints
@@ -482,108 +535,6 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
     
     return updated_result, remaining_unassigned
 
-def assign_customers_to_predefined_aus(customer_df, branch_df, au_list, proximity_radius=20, max_portfolio_size=210):
-    """
-    Create In-Market portfolios for predefined AUs by assigning customers within proximity_radius
-    Returns assigned customers and remaining unassigned customers
-    """
-    if not au_list or len(au_list) == 0:
-        print("No predefined AUs provided, skipping predefined AU assignment step")
-        return [], list(customer_df.index)
-    
-    print(f"Step 0: Creating In-Market portfolios for {len(au_list)} predefined AUs within {proximity_radius} miles...")
-    
-    # Filter branch_df to only include the predefined AUs
-    predefined_branches = branch_df[branch_df['BRANCH_AU'].isin(au_list)].copy()
-    
-    if len(predefined_branches) == 0:
-        print("Warning: None of the predefined AUs found in branch_df")
-        return [], list(customer_df.index)
-    
-    print(f"Found {len(predefined_branches)} predefined AUs in branch data")
-    
-    # Get customer and branch coordinates
-    customer_coords = customer_df[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
-    branch_coords = predefined_branches[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
-    
-    # Calculate distance matrix between all customers and predefined AUs
-    distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
-    
-    predefined_results = []
-    assigned_customer_indices = set()
-    
-    # Track portfolio sizes to respect max_portfolio_size
-    portfolio_sizes = {au: 0 for au in au_list}
-    
-    # For each AU, find customers within proximity and assign closest ones first
-    for i, (_, branch_row) in enumerate(predefined_branches.iterrows()):
-        au = branch_row['BRANCH_AU']
-        
-        # Get distances from all customers to this AU
-        distances_to_au = distance_matrix[:, i]
-        
-        # Find customers within proximity_radius
-        within_radius_mask = distances_to_au <= proximity_radius
-        
-        if not np.any(within_radius_mask):
-            print(f"No customers found within {proximity_radius} miles of AU {au}")
-            continue
-        
-        # Get candidate customers with their distances
-        candidates = []
-        for j, (customer_idx, customer_data) in enumerate(customer_df.iterrows()):
-            if within_radius_mask[j] and customer_idx not in assigned_customer_indices:
-                candidates.append({
-                    'customer_idx': customer_idx,
-                    'distance': distances_to_au[j],
-                    'customer_data': customer_data
-                })
-        
-        # Sort candidates by distance (closest first)
-        candidates.sort(key=lambda x: x['distance'])
-        
-        # Assign customers up to max_portfolio_size
-        assigned_to_this_au = 0
-        for candidate in candidates:
-            if assigned_to_this_au >= max_portfolio_size:
-                break
-            
-            customer_idx = candidate['customer_idx']
-            distance = candidate['distance']
-            customer_data = candidate['customer_data']
-            
-            # Assign customer to this AU
-            predefined_results.append({
-                'ECN': customer_data['ECN'],
-                'BILLINGCITY': customer_data['BILLINGCITY'],
-                'BILLINGSTATE': customer_data['BILLINGSTATE'],
-                'LAT_NUM': customer_data['LAT_NUM'],
-                'LON_NUM': customer_data['LON_NUM'],
-                'ASSIGNED_AU': au,
-                'DISTANCE_TO_AU': distance,
-                'TYPE': 'INMARKET'
-            })
-            
-            assigned_customer_indices.add(customer_idx)
-            assigned_to_this_au += 1
-            portfolio_sizes[au] += 1
-        
-        print(f"Assigned {assigned_to_this_au} customers to predefined AU {au}")
-    
-    # Get remaining unassigned customers
-    unassigned_customer_indices = [idx for idx in customer_df.index if idx not in assigned_customer_indices]
-    
-    print(f"Predefined AU assignment complete:")
-    print(f"  - Total customers assigned: {len(assigned_customer_indices)}")
-    print(f"  - Remaining unassigned customers: {len(unassigned_customer_indices)}")
-    
-    # Print portfolio sizes for predefined AUs
-    for au in au_list:
-        if portfolio_sizes[au] > 0:
-            print(f"  - AU {au}: {portfolio_sizes[au]} customers")
-    
-    return predefined_results, unassigned_customer_indices
-
 def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df, au_list=None):
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
@@ -749,6 +700,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df,
             )
             
             # Calculate actual distances for second iteration customers
+            # Calculate actual distances for second iteration customers
             for branch_au, customers in customer_assignments_2.items():
                 branch_coord = branch_df[branch_df['BRANCH_AU'] == branch_au].iloc[0]
                 
@@ -884,13 +836,15 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df,
     
     return result_df
 
-# Usage example:
+# Usage examples:
 # Enhanced assignments with predefined AUs
 # au_list = [101, 102, 103]  # Your predefined AU list
 # assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df, au_list)
 # assignments.to_csv('customer_au_assignments_with_predefined_aus.csv', index=False)
-        
-        final_centralized_results, used_branches = create_final_centralized_portfolios(import pandas as pd
+
+# Without predefined AUs (original behavior):
+# assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
+# assignments.to_csv('customer_au_assignments_updated_sizes.csv', index=False)import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.neighbors import BallTree
@@ -982,6 +936,108 @@ def find_candidates_spatial(customer_coords, seed_coord, max_radius, ball_tree=N
         return indices[sorted_indices], distances[sorted_indices]
     
     return np.array([]), np.array([])
+
+def assign_customers_to_predefined_aus(customer_df, branch_df, au_list, proximity_radius=20, max_portfolio_size=210):
+    """
+    Create In-Market portfolios for predefined AUs by assigning customers within proximity_radius
+    Returns assigned customers and remaining unassigned customers
+    """
+    if not au_list or len(au_list) == 0:
+        print("No predefined AUs provided, skipping predefined AU assignment step")
+        return [], list(customer_df.index)
+    
+    print(f"Step 0: Creating In-Market portfolios for {len(au_list)} predefined AUs within {proximity_radius} miles...")
+    
+    # Filter branch_df to only include the predefined AUs
+    predefined_branches = branch_df[branch_df['BRANCH_AU'].isin(au_list)].copy()
+    
+    if len(predefined_branches) == 0:
+        print("Warning: None of the predefined AUs found in branch_df")
+        return [], list(customer_df.index)
+    
+    print(f"Found {len(predefined_branches)} predefined AUs in branch data")
+    
+    # Get customer and branch coordinates
+    customer_coords = customer_df[['LAT_NUM', 'LON_NUM']].values.astype(np.float64)
+    branch_coords = predefined_branches[['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].values.astype(np.float64)
+    
+    # Calculate distance matrix between all customers and predefined AUs
+    distance_matrix = compute_distance_matrix(customer_coords, branch_coords)
+    
+    predefined_results = []
+    assigned_customer_indices = set()
+    
+    # Track portfolio sizes to respect max_portfolio_size
+    portfolio_sizes = {au: 0 for au in au_list}
+    
+    # For each AU, find customers within proximity and assign closest ones first
+    for i, (_, branch_row) in enumerate(predefined_branches.iterrows()):
+        au = branch_row['BRANCH_AU']
+        
+        # Get distances from all customers to this AU
+        distances_to_au = distance_matrix[:, i]
+        
+        # Find customers within proximity_radius
+        within_radius_mask = distances_to_au <= proximity_radius
+        
+        if not np.any(within_radius_mask):
+            print(f"No customers found within {proximity_radius} miles of AU {au}")
+            continue
+        
+        # Get candidate customers with their distances
+        candidates = []
+        for j, (customer_idx, customer_data) in enumerate(customer_df.iterrows()):
+            if within_radius_mask[j] and customer_idx not in assigned_customer_indices:
+                candidates.append({
+                    'customer_idx': customer_idx,
+                    'distance': distances_to_au[j],
+                    'customer_data': customer_data
+                })
+        
+        # Sort candidates by distance (closest first)
+        candidates.sort(key=lambda x: x['distance'])
+        
+        # Assign customers up to max_portfolio_size
+        assigned_to_this_au = 0
+        for candidate in candidates:
+            if assigned_to_this_au >= max_portfolio_size:
+                break
+            
+            customer_idx = candidate['customer_idx']
+            distance = candidate['distance']
+            customer_data = candidate['customer_data']
+            
+            # Assign customer to this AU
+            predefined_results.append({
+                'ECN': customer_data['ECN'],
+                'BILLINGCITY': customer_data['BILLINGCITY'],
+                'BILLINGSTATE': customer_data['BILLINGSTATE'],
+                'LAT_NUM': customer_data['LAT_NUM'],
+                'LON_NUM': customer_data['LON_NUM'],
+                'ASSIGNED_AU': au,
+                'DISTANCE_TO_AU': distance,
+                'TYPE': 'INMARKET'
+            })
+            
+            assigned_customer_indices.add(customer_idx)
+            assigned_to_this_au += 1
+            portfolio_sizes[au] += 1
+        
+        print(f"Assigned {assigned_to_this_au} customers to predefined AU {au}")
+    
+    # Get remaining unassigned customers
+    unassigned_customer_indices = [idx for idx in customer_df.index if idx not in assigned_customer_indices]
+    
+    print(f"Predefined AU assignment complete:")
+    print(f"  - Total customers assigned: {len(assigned_customer_indices)}")
+    print(f"  - Remaining unassigned customers: {len(unassigned_customer_indices)}")
+    
+    # Print portfolio sizes for predefined AUs
+    for au in au_list:
+        if portfolio_sizes[au] > 0:
+            print(f"  - AU {au}: {portfolio_sizes[au]} customers")
+    
+    return predefined_results, unassigned_customer_indices
 
 def constrained_clustering_optimized(customer_df, min_size=160, max_size=180, max_radius=20):
     """Optimized clustering with vectorized operations and spatial indexing"""
@@ -1488,105 +1544,3 @@ def create_centralized_clusters_with_radius_and_assign(unassigned_customers_df, 
         cluster_assignments = assign_clusters_to_branches_unique(
             centralized_cluster_info, branch_df, used_branches
         )
-        
-        # Update used_branches
-        for _, assignment in cluster_assignments.iterrows():
-            used_branches.add(assignment['assigned_branch'])
-        
-        # Step 3: Assign customers within clusters to their assigned branches
-        for _, assignment in cluster_assignments.iterrows():
-            cluster_id = assignment['cluster_id']
-            assigned_branch = assignment['assigned_branch']
-            
-            # Get customers in this cluster
-            cluster_customers = clustered_centralized[
-                clustered_centralized['cluster'] == cluster_id
-            ]
-            
-            # Get branch coordinates for distance calculation
-            branch_coords = branch_df[
-                branch_df['BRANCH_AU'] == assigned_branch
-            ][['BRANCH_LAT_NUM', 'BRANCH_LON_NUM']].iloc[0]
-            
-            # Calculate distances from each customer to assigned branch
-            for idx, customer in cluster_customers.iterrows():
-                distance = haversine_distance_vectorized(
-                    customer['LAT_NUM'], customer['LON_NUM'],
-                    branch_coords['BRANCH_LAT_NUM'], branch_coords['BRANCH_LON_NUM']
-                )
-                
-                # Get original customer data
-                original_customer = unassigned_customers_df.loc[idx]
-                
-                centralized_results.append({
-                    'customer_idx': idx,
-                    'ECN': original_customer['ECN'],
-                    'BILLINGCITY': original_customer['BILLINGCITY'],
-                    'BILLINGSTATE': original_customer['BILLINGSTATE'],
-                    'LAT_NUM': original_customer['LAT_NUM'],
-                    'LON_NUM': original_customer['LON_NUM'],
-                    'ASSIGNED_AU': assigned_branch,
-                    'DISTANCE_TO_AU': distance,
-                    'TYPE': 'CENTRALIZED',
-                    'CLUSTER_ID': cluster_id
-                })
-        
-        # Find customers that couldn't be clustered
-        unassigned_centralized = clustered_centralized[
-            clustered_centralized['cluster'] == -1
-        ]
-        final_unassigned = list(unassigned_centralized.index)
-        
-    else:
-        final_unassigned = list(unassigned_customers_df.index)
-    
-    return centralized_results, final_unassigned, used_branches
-
-def create_final_centralized_portfolios(unassigned_customers_df, branch_df, used_branches, max_size=210):
-    """
-    Create centralized portfolios for final unassigned customers without radius constraints
-    Split into groups of max_size, assign each group to nearest available branch
-    """
-    
-    if len(unassigned_customers_df) == 0:
-        return [], used_branches
-    
-    print(f"Creating final centralized portfolios for {len(unassigned_customers_df)} unassigned customers")
-    
-    final_centralized_results = []
-    customers_list = list(unassigned_customers_df.index)
-    
-    # Split customers into groups of max_size
-    customer_groups = []
-    for i in range(0, len(customers_list), max_size):
-        group = customers_list[i:i + max_size]
-        customer_groups.append(group)
-    
-    print(f"Created {len(customer_groups)} groups with sizes: {[len(group) for group in customer_groups]}")
-    
-    # Get available branches
-    available_branches = branch_df[~branch_df['BRANCH_AU'].isin(used_branches)].copy()
-    
-    if len(available_branches) < len(customer_groups):
-        print(f"Warning: Only {len(available_branches)} available branches for {len(customer_groups)} groups")
-        print("Some groups may not get assigned to branches")
-    
-    # For each group, find the nearest available branch
-    for group_idx, customer_group in enumerate(customer_groups):
-        if len(available_branches) == 0:
-            print(f"No more available branches for group {group_idx + 1}")
-            continue
-        
-        # Calculate centroid of customer group
-        group_customers = unassigned_customers_df.loc[customer_group]
-        group_centroid_lat = group_customers['LAT_NUM'].mean()
-        group_centroid_lon = group_customers['LON_NUM'].mean()
-        
-        # Find nearest available branch to group centroid
-        min_distance = float('inf')
-        best_branch = None
-        
-        for _, branch in available_branches.iterrows():
-            distance = haversine_distance_vectorized(
-                group_centroid_lat, group_centroid_lon,
-                branch['BRANCH_LA
