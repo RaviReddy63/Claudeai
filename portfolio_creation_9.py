@@ -1224,10 +1224,10 @@ def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_
             continue
         
         # Get portfolio assignments for this city
-        city_portfolios = same_city_assignments['ASSIGNED_AU'].value_counts().to_dict()
+        city_portfolios = same_city_assignments['ASSIGNED_AU'].value_counts()
         
         # Assign to the most common portfolio in this city
-        most_common_au = max(city_portfolios.items(), key=lambda x: x[1])[0]
+        most_common_au = city_portfolios.index[0]  # First index is the most frequent
         
         # Calculate approximate distance (will be set to 0 since we don't have coordinates)
         city_assignments.append({
