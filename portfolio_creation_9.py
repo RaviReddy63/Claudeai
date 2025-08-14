@@ -1250,6 +1250,7 @@ def assign_leftover_customers_to_existing_centralized(leftover_customers, result
     Distribute them evenly across existing centralized portfolios
     """
     if not leftover_customers:
+        print("No leftover customers to assign")
         return []
     
     # Get existing centralized portfolios
@@ -1257,6 +1258,7 @@ def assign_leftover_customers_to_existing_centralized(leftover_customers, result
     
     if len(centralized_portfolios) == 0:
         print("Warning: No existing centralized portfolios found for leftover customers")
+        print("Leftover customers will remain unassigned")
         return []
     
     # Get current sizes of centralized portfolios
@@ -1522,9 +1524,19 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Step 11: Handle customers without coordinates
     print("Step 11: Handling customers without coordinates...")
-    result_df, used_branches = assign_customers_without_coordinates_by_city(
-        result_df, customer_df, branch_df, used_branches
-    )
+    try:
+        result_df, used_branches = assign_customers_without_coordinates_by_city(
+            result_df, customer_df, branch_df, used_branches
+        )
+        print("Successfully completed coordinate handling")
+    except Exception as e:
+        print(f"Error in coordinate handling: {e}")
+        print("Continuing without coordinate-based assignments...")
+        # Ensure we still have valid return values
+        if result_df is None:
+            result_df = pd.DataFrame()
+        if used_branches is None:
+            used_branches = set()
     
     # Update final_unassigned to be empty since we assigned everyone
     final_unassigned = []
