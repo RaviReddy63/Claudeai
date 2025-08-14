@@ -1082,7 +1082,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
     Uses centralized PORTFOLIO_CONFIG for all size constraints
-    """, unassigned_customer_indices
+    """
     
     # Work with a copy
     updated_result = result_df.copy()
