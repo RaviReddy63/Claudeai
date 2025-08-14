@@ -113,6 +113,7 @@ def constrained_clustering_optimized(customer_df, min_size=None, max_size=None, 
         max_size = PORTFOLIO_CONFIG['INITIAL_MAX_SIZE']
     if max_radius is None:
         max_radius = PORTFOLIO_CONFIG['MAX_RADIUS_FIRST']
+    
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
     
@@ -247,6 +248,7 @@ def constrained_clustering_with_radius(customer_df, min_size=None, max_size=None
         max_size = PORTFOLIO_CONFIG['MAX_SIZE']
     if max_radius is None:
         max_radius = PORTFOLIO_CONFIG['CENTRALIZED_MAX_RADIUS']
+    
     customers_clean = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
     customers_clean['cluster'] = -1
     
@@ -1182,20 +1184,141 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
     
     return updated_result, remaining_unassigned
 
+def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_df, used_branches):
+    """
+    Handle customers without LAT_NUM/LON_NUM by assigning them based on BILLINGCITY matches
+    Leftover customers are assigned to centralized portfolios
+    """
+    # Find customers without coordinates
+    customers_without_coords = customer_df[
+        customer_df['LAT_NUM'].isna() | customer_df['LON_NUM'].isna()
+    ].copy()
+    
+    if len(customers_without_coords) == 0:
+        print("No customers without coordinates found")
+        return result_df, used_branches
+    
+    print(f"Found {len(customers_without_coords)} customers without coordinates")
+    
+    # Get existing assignments with city information
+    existing_assignments = result_df.copy()
+    
+    city_assignments = []
+    leftover_customers = []
+    
+    # Process each customer without coordinates
+    for idx, customer in customers_without_coords.iterrows():
+        customer_city = customer['BILLINGCITY']
+        
+        if pd.isna(customer_city) or customer_city == '':
+            leftover_customers.append(customer)
+            continue
+        
+        # Find existing customers in the same city who are already assigned
+        same_city_assignments = existing_assignments[
+            existing_assignments['BILLINGCITY'].str.upper() == customer_city.upper()
+        ]
+        
+        if len(same_city_assignments) == 0:
+            leftover_customers.append(customer)
+            continue
+        
+        # Get portfolio assignments for this city
+        city_portfolios = same_city_assignments['ASSIGNED_AU'].value_counts().to_dict()
+        
+        # Assign to the most common portfolio in this city
+        most_common_au = max(city_portfolios.items(), key=lambda x: x[1])[0]
+        
+        # Calculate approximate distance (will be set to 0 since we don't have coordinates)
+        city_assignments.append({
+            'ECN': customer['ECN'],
+            'BILLINGCITY': customer['BILLINGCITY'],
+            'BILLINGSTATE': customer['BILLINGSTATE'],
+            'LAT_NUM': None,  # No coordinates available
+            'LON_NUM': None,  # No coordinates available
+            'ASSIGNED_AU': most_common_au,
+            'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
+            'TYPE': 'CITY_MATCH'
+        })
+    
+    print(f"Assigned {len(city_assignments)} customers by city matching")
+    print(f"Leftover customers without coordinates: {len(leftover_customers)}")
+    
+    # Handle leftover customers by assigning to centralized portfolios
+    leftover_assignments = []
+    
+    if leftover_customers:
+        # Get available branches for centralized assignment
+        available_branches = branch_df[~branch_df['BRANCH_AU'].isin(used_branches)].copy()
+        
+        if len(available_branches) > 0:
+            # Split leftover customers into groups and assign to available branches
+            max_size = PORTFOLIO_CONFIG['MAX_SIZE']
+            
+            # Create groups
+            customer_groups = []
+            for i in range(0, len(leftover_customers), max_size):
+                group = leftover_customers[i:i + max_size]
+                customer_groups.append(group)
+            
+            # Assign each group to a different available branch
+            for group_idx, customer_group in enumerate(customer_groups):
+                if group_idx >= len(available_branches):
+                    # If we run out of branches, assign remaining to the last available branch
+                    branch_au = available_branches.iloc[-1]['BRANCH_AU']
+                else:
+                    branch_au = available_branches.iloc[group_idx]['BRANCH_AU']
+                
+                for customer in customer_group:
+                    leftover_assignments.append({
+                        'ECN': customer['ECN'],
+                        'BILLINGCITY': customer['BILLINGCITY'],
+                        'BILLINGSTATE': customer['BILLINGSTATE'],
+                        'LAT_NUM': None,  # No coordinates available
+                        'LON_NUM': None,  # No coordinates available
+                        'ASSIGNED_AU': branch_au,
+                        'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
+                        'TYPE': 'CENTRALIZED_NO_COORDS'
+                    })
+                
+                # Mark branch as used
+                used_branches.add(branch_au)
+            
+            print(f"Assigned {len(leftover_assignments)} leftover customers to centralized portfolios")
+    
+    # Combine all new assignments with existing results
+    all_new_assignments = city_assignments + leftover_assignments
+    
+    if all_new_assignments:
+        new_assignments_df = pd.DataFrame(all_new_assignments)
+        result_df = pd.concat([result_df, new_assignments_df], ignore_index=True)
+    
+    return result_df, used_branches
+
 def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
     Uses centralized PORTFOLIO_CONFIG for all size constraints
+    Includes handling for customers without coordinates
     """
     
     print(f"Starting enhanced assignment with {len(customer_df)} customers and {len(branch_df)} branches")
     
+    # Separate customers with and without coordinates
+    customers_with_coords = customer_df.dropna(subset=['LAT_NUM', 'LON_NUM']).copy()
+    customers_without_coords = customer_df[
+        customer_df['LAT_NUM'].isna() | customer_df['LON_NUM'].isna()
+    ].copy()
+    
+    print(f"Customers with coordinates: {len(customers_with_coords)}")
+    print(f"Customers without coordinates: {len(customers_without_coords)}")
+    
     # Track used branches across all assignments
     used_branches = set()
     
-    # Step 1: Create first INMARKET clusters
+    # Step 1: Create first INMARKET clusters (only for customers with coordinates)
     print("Step 1: Creating first INMARKET clusters...")
-    clustered_customers, cluster_info = constrained_clustering_optimized(customer_df)
+    clustered_customers, cluster_info = constrained_clustering_optimized(customers_with_coords)
     
     inmarket_results = []
     unassigned_customer_indices = []
@@ -1225,7 +1348,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
             
             for customer in customers:
                 customer_idx = customer['customer_idx']
-                customer_data = customer_df.loc[customer_idx]
+                customer_data = customers_with_coords.loc[customer_idx]
                 
                 # Calculate distance to assigned branch
                 distance = haversine_distance_vectorized(
@@ -1263,10 +1386,10 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
                 customer_assignments[au] = []
             
             # Find the customer index
-            customer_idx = customer_df[
-                (customer_df['ECN'] == result['ECN']) &
-                (customer_df['LAT_NUM'] == result['LAT_NUM']) &
-                (customer_df['LON_NUM'] == result['LON_NUM'])
+            customer_idx = customers_with_coords[
+                (customers_with_coords['ECN'] == result['ECN']) &
+                (customers_with_coords['LAT_NUM'] == result['LAT_NUM']) &
+                (customers_with_coords['LON_NUM'] == result['LON_NUM'])
             ].index[0]
             
             customer_assignments[au].append({
@@ -1274,7 +1397,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
                 'distance': result['DISTANCE_TO_AU']
             })
         
-        unassigned_customers_df = customer_df.loc[unassigned_customer_indices]
+        unassigned_customers_df = customers_with_coords.loc[unassigned_customer_indices]
         
         proximity_results, unassigned_after_proximity, updated_customer_assignments = assign_proximity_customers_to_existing_portfolios(
             unassigned_customers_df, customer_assignments, branch_df
@@ -1288,7 +1411,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     unassigned_after_second_inmarket = unassigned_after_proximity.copy()
     
     if unassigned_after_proximity:
-        remaining_customers_df = customer_df.loc[unassigned_after_proximity]
+        remaining_customers_df = customers_with_coords.loc[unassigned_after_proximity]
         
         # Create second iteration of INMARKET clusters with larger radius
         clustered_customers_2, cluster_info_2 = constrained_clustering_optimized(
@@ -1362,7 +1485,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     if len(result_df) > 0 and unassigned_after_second_inmarket:
         print("Step 8: Filling undersized INMARKET portfolios...")
         result_df, unassigned_after_second_inmarket = fill_undersized_portfolios_from_unassigned(
-            result_df, unassigned_after_second_inmarket, customer_df, branch_df
+            result_df, unassigned_after_second_inmarket, customers_with_coords, branch_df
         )
     
     # Step 9: Create CENTRALIZED clusters
@@ -1371,7 +1494,7 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     if unassigned_after_second_inmarket:
         print("Step 9: Creating CENTRALIZED clusters...")
-        remaining_unassigned_df = customer_df.loc[unassigned_after_second_inmarket]
+        remaining_unassigned_df = customers_with_coords.loc[unassigned_after_second_inmarket]
         
         centralized_results, remaining_after_centralized, used_branches = create_centralized_clusters_with_radius_and_assign(
             remaining_unassigned_df, branch_df, used_branches
@@ -1382,51 +1505,71 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     if remaining_after_centralized:
         print("Step 10: Creating final centralized portfolios for remaining unassigned customers...")
-        final_unassigned_df = customer_df.loc[remaining_after_centralized]
+        final_unassigned_df = customers_with_coords.loc[remaining_after_centralized]
         
         final_centralized_results, used_branches = create_final_centralized_portfolios(
             final_unassigned_df, branch_df, used_branches
         )
     
-    # Combine all results
+    # Combine all results for customers with coordinates
     if len(centralized_results) > 0:
         result_df = pd.concat([result_df, pd.DataFrame(centralized_results)], ignore_index=True)
     
     if len(final_centralized_results) > 0:
         result_df = pd.concat([result_df, pd.DataFrame(final_centralized_results)], ignore_index=True)
     
+    # Step 11: Handle customers without coordinates
+    print("Step 11: Handling customers without coordinates...")
+    result_df, used_branches = assign_customers_without_coordinates_by_city(
+        result_df, customer_df, branch_df, used_branches
+    )
+    
     # Update final_unassigned to be empty since we assigned everyone
     final_unassigned = []
     
     # Print summary
-    print(f"\n=== FINAL SUMMARY WITH UPDATED PORTFOLIO SIZES ===")
+    print(f"\n=== FINAL SUMMARY WITH COORDINATE HANDLING ===")
     print(f"Portfolio Size Constraints: Min={PORTFOLIO_CONFIG['MIN_SIZE']}, Max={PORTFOLIO_CONFIG['MAX_SIZE']}, Initial={PORTFOLIO_CONFIG['MIN_SIZE']}-{PORTFOLIO_CONFIG['INITIAL_MAX_SIZE']}")
     print(f"Total customers processed: {len(customer_df)}")
+    print(f"Customers with coordinates: {len(customers_with_coords)}")
+    print(f"Customers without coordinates: {len(customers_without_coords)}")
     print(f"Total branches used: {len(used_branches)}")
+    
     if len(result_df) > 0:
-        print(f"INMARKET customers assigned: {len(result_df[result_df['TYPE'] == 'INMARKET'])}")
-        print(f"CENTRALIZED customers assigned: {len(result_df[result_df['TYPE'] == 'CENTRALIZED'])}")
+        type_counts = result_df['TYPE'].value_counts()
+        print(f"\nAssignment Type Summary:")
+        for assignment_type, count in type_counts.items():
+            print(f"  {assignment_type}: {count}")
+        
         print(f"Total unique portfolios created: {result_df['ASSIGNED_AU'].nunique()}")
+    
     print(f"Final unassigned customers: {len(final_unassigned)}")
     print(f"Total assigned customers: {len(result_df)}")
     
     if len(result_df) > 0:
-        type_summary = result_df.groupby('TYPE').agg({
-            'ECN': 'count',
-            'DISTANCE_TO_AU': ['mean', 'max']
-        }).round(2)
-        type_summary.columns = ['Customer_Count', 'Avg_Distance', 'Max_Distance']
-        print("\nPortfolio Type Summary:")
-        print(type_summary)
+        # Separate coordinate-based and non-coordinate-based assignments for analysis
+        coord_based = result_df[result_df['LAT_NUM'].notna()].copy()
+        non_coord_based = result_df[result_df['LAT_NUM'].isna()].copy()
         
-        portfolio_summary = result_df.groupby('ASSIGNED_AU').agg({
-            'ECN': 'count',
-            'DISTANCE_TO_AU': 'mean',
-            'TYPE': 'first'
-        }).round(2)
-        portfolio_summary.columns = ['Customer_Count', 'Avg_Distance', 'Type']
-        print(f"\nIndividual Portfolio Summary:")
-        print(portfolio_summary)
+        if len(coord_based) > 0:
+            print(f"\nCoordinate-based Assignment Statistics:")
+            type_summary = coord_based.groupby('TYPE').agg({
+                'ECN': 'count',
+                'DISTANCE_TO_AU': ['mean', 'max']
+            }).round(2)
+            type_summary.columns = ['Customer_Count', 'Avg_Distance', 'Max_Distance']
+            print(type_summary)
+            
+            print(f"\nOverall Distance Statistics (coordinate-based only):")
+            print(f"Average distance to assigned AU: {coord_based['DISTANCE_TO_AU'].mean():.2f} miles")
+            print(f"Maximum distance to assigned AU: {coord_based['DISTANCE_TO_AU'].max():.2f} miles")
+            print(f"Median distance to assigned AU: {coord_based['DISTANCE_TO_AU'].median():.2f} miles")
+        
+        if len(non_coord_based) > 0:
+            print(f"\nNon-coordinate-based Assignment Statistics:")
+            non_coord_type_counts = non_coord_based['TYPE'].value_counts()
+            for assignment_type, count in non_coord_type_counts.items():
+                print(f"  {assignment_type}: {count}")
         
         # Portfolio size distribution
         portfolio_sizes = result_df.groupby('ASSIGNED_AU').size()
@@ -1438,16 +1581,42 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
         print(f"Min portfolio size: {portfolio_sizes.min()}")
         print(f"Max portfolio size: {portfolio_sizes.max()}")
         
-        print(f"\nOverall Distance Statistics:")
-        print(f"Average distance to assigned AU: {result_df['DISTANCE_TO_AU'].mean():.2f} miles")
-        print(f"Maximum distance to assigned AU: {result_df['DISTANCE_TO_AU'].max():.2f} miles")
-        print(f"Median distance to assigned AU: {result_df['DISTANCE_TO_AU'].median():.2f} miles")
+        # Detailed portfolio summary
+        portfolio_summary = result_df.groupby('ASSIGNED_AU').agg({
+            'ECN': 'count',
+            'DISTANCE_TO_AU': lambda x: x[x.notna()].mean() if x.notna().any() else 0,
+            'TYPE': lambda x: ', '.join(x.unique())
+        }).round(2)
+        portfolio_summary.columns = ['Customer_Count', 'Avg_Distance', 'Assignment_Types']
+        print(f"\nIndividual Portfolio Summary (Top 10):")
+        print(portfolio_summary.head(10))
     
     return result_df
 
 # Usage example:
-# Enhanced assignments with centralized configuration
-# All portfolio sizes and parameters controlled by PORTFOLIO_CONFIG dictionary
-# To modify sizes, simply update the PORTFOLIO_CONFIG values at the top  
-# assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
-# assignments.to_csv('customer_au_assignments_updated_sizes.csv', index=False)
+def main():
+    """
+    Main function to run the enhanced customer-AU assignment with coordinate handling
+    """
+    # Load your data
+    # customer_df = pd.read_csv('customer_data.csv')
+    # branch_df = pd.read_csv('branch_data.csv')
+    
+    # Run the enhanced assignment
+    # assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
+    
+    # Save results
+    # assignments.to_csv('customer_au_assignments_with_coordinate_handling.csv', index=False)
+    
+    # Additional analysis can be performed here
+    # Example: Check assignment quality
+    # print("\nAssignment Quality Analysis:")
+    # coord_assignments = assignments[assignments['LAT_NUM'].notna()]
+    # if len(coord_assignments) > 0:
+    #     print(f"Average distance for INMARKET: {coord_assignments[coord_assignments['TYPE'] == 'INMARKET']['DISTANCE_TO_AU'].mean():.2f} miles")
+    #     print(f"Average distance for CENTRALIZED: {coord_assignments[coord_assignments['TYPE'] == 'CENTRALIZED']['DISTANCE_TO_AU'].mean():.2f} miles")
+    
+    pass
+
+if __name__ == "__main__":
+    main()
