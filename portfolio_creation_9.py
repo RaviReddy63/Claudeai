@@ -1182,7 +1182,161 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
     
     return updated_result, remaining_unassigned
 
-def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
+def assign_customers_without_coordinates(result_df, customer_df):
+    """
+    Assign customers without lat/lon coordinates to existing portfolios based on billing city matches
+    """
+    # Find customers without coordinates
+    customers_without_coords = customer_df[
+        (customer_df['LAT_NUM'].isna()) | (customer_df['LON_NUM'].isna()) |
+        (customer_df['LAT_NUM'] == 0) | (customer_df['LON_NUM'] == 0)
+    ].copy()
+    
+    if len(customers_without_coords) == 0:
+        print("No customers found without coordinates")
+        return result_df
+    
+    print(f"Found {len(customers_without_coords)} customers without coordinates")
+    
+    # Get unique cities from existing portfolios
+    portfolio_cities = {}
+    for _, row in result_df.iterrows():
+        city = row['BILLINGCITY']
+        au = row['ASSIGNED_AU']
+        
+        if city not in portfolio_cities:
+            portfolio_cities[city] = {}
+        
+        if au not in portfolio_cities[city]:
+            portfolio_cities[city][au] = 0
+        portfolio_cities[city][au] += 1
+    
+    # Track current portfolio sizes
+    current_portfolio_sizes = result_df['ASSIGNED_AU'].value_counts().to_dict()
+    
+    city_assignments = []
+    unmatched_customers = []
+    
+    # Process each customer without coordinates
+    for idx, customer in customers_without_coords.iterrows():
+        customer_city = customer['BILLINGCITY']
+        assigned = False
+        
+        if pd.isna(customer_city) or customer_city == '':
+            unmatched_customers.append({
+                'ECN': customer['ECN'],
+                'BILLINGCITY': customer_city,
+                'BILLINGSTATE': customer['BILLINGSTATE'],
+                'REASON': 'No billing city'
+            })
+            continue
+        
+        # Check if this city exists in any portfolio
+        if customer_city in portfolio_cities:
+            # Find the AU with the most customers from this city
+            city_aus = portfolio_cities[customer_city]
+            
+            # Sort AUs by number of customers from this city (descending)
+            sorted_aus = sorted(city_aus.items(), key=lambda x: x[1], reverse=True)
+            
+            # Try to assign to the AU with most customers from this city
+            for au, count in sorted_aus:
+                current_size = current_portfolio_sizes.get(au, 0)
+                
+                # Check if portfolio has capacity
+                if current_size < PORTFOLIO_CONFIG['MAX_SIZE']:
+                    # Get the portfolio type from existing customers in this AU
+                    portfolio_type = result_df[result_df['ASSIGNED_AU'] == au]['TYPE'].iloc[0]
+                    
+                    city_assignments.append({
+                        'ECN': customer['ECN'],
+                        'BILLINGCITY': customer['BILLINGCITY'],
+                        'BILLINGSTATE': customer['BILLINGSTATE'],
+                        'LAT_NUM': None,
+                        'LON_NUM': None,
+                        'ASSIGNED_AU': au,
+                        'DISTANCE_TO_AU': None,
+                        'TYPE': portfolio_type,  # Use same type as the portfolio
+                        'CITY_CUSTOMERS_IN_AU': count
+                    })
+                    
+                    # Update portfolio size
+                    current_portfolio_sizes[au] = current_size + 1
+                    assigned = True
+                    break
+        
+        if not assigned:
+            # If no city match found, assign to final centralized portfolios
+            # Get all centralized portfolios (those created in final step)
+            centralized_portfolios = result_df[result_df['TYPE'] == 'CENTRALIZED']['ASSIGNED_AU'].unique()
+            
+            if len(centralized_portfolios) > 0:
+                # Find centralized portfolio with lowest current size
+                centralized_sizes = {}
+                for au in centralized_portfolios:
+                    centralized_sizes[au] = current_portfolio_sizes.get(au, 0)
+                
+                # Sort by current size (ascending) to find least filled
+                sorted_centralized = sorted(centralized_sizes.items(), key=lambda x: x[1])
+                
+                # Assign to the least filled centralized portfolio that has capacity
+                for au, current_size in sorted_centralized:
+                    if current_size < PORTFOLIO_CONFIG['MAX_SIZE']:
+                        city_assignments.append({
+                            'ECN': customer['ECN'],
+                            'BILLINGCITY': customer['BILLINGCITY'],
+                            'BILLINGSTATE': customer['BILLINGSTATE'],
+                            'LAT_NUM': None,
+                            'LON_NUM': None,
+                            'ASSIGNED_AU': au,
+                            'DISTANCE_TO_AU': None,
+                            'TYPE': 'CENTRALIZED',
+                            'CITY_CUSTOMERS_IN_AU': 0  # No city match, just assignment
+                        })
+                        
+                        # Update portfolio size
+                        current_portfolio_sizes[au] = current_size + 1
+                        assigned = True
+                        break
+        
+        # Only add to unmatched if still not assigned
+        if not assigned:
+            unmatched_customers.append({
+                'ECN': customer['ECN'],
+                'BILLINGCITY': customer_city,
+                'BILLINGSTATE': customer['BILLINGSTATE'],
+                'REASON': 'No capacity in any portfolio'
+            })
+    
+    # Add city-matched customers to result
+    if len(city_assignments) > 0:
+        city_df = pd.DataFrame(city_assignments)
+        result_df = pd.concat([result_df, city_df], ignore_index=True)
+        
+        print(f"Successfully assigned {len(city_assignments)} customers based on city matches")
+        
+        # Show city assignment summary
+        city_summary = pd.DataFrame(city_assignments).groupby(['BILLINGCITY', 'ASSIGNED_AU']).agg({
+            'ECN': 'count',
+            'CITY_CUSTOMERS_IN_AU': 'first'
+        }).reset_index()
+        city_summary.columns = ['City', 'Assigned_AU', 'Customers_Added', 'Existing_City_Customers']
+        
+        print("\nCity Assignment Summary:")
+        print(city_summary.to_string(index=False))
+    
+    # Report unmatched customers
+    if len(unmatched_customers) > 0:
+        print(f"\n{len(unmatched_customers)} customers could not be assigned:")
+        unmatched_df = pd.DataFrame(unmatched_customers)
+        unmatched_summary = unmatched_df.groupby('REASON').agg({
+            'ECN': 'count',
+            'BILLINGCITY': lambda x: list(x.dropna().unique())[:5]  # Show first 5 unique cities
+        }).reset_index()
+        unmatched_summary.columns = ['Reason', 'Count', 'Sample_Cities']
+        print(unmatched_summary.to_string(index=False))
+    
+    return result_df
     """
     Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
     Uses centralized PORTFOLIO_CONFIG for all size constraints
@@ -1397,6 +1551,11 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Update final_unassigned to be empty since we assigned everyone
     final_unassigned = []
+    
+    # Step 11: Assign customers without coordinates based on city matching
+    if len(result_df) > 0:
+        print("Step 11: Assigning customers without coordinates based on city matching...")
+        result_df = assign_customers_without_coordinates(result_df, customer_df)
     
     # Print summary
     print(f"\n=== FINAL SUMMARY WITH UPDATED PORTFOLIO SIZES ===")
