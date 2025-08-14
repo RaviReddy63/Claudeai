@@ -1224,10 +1224,10 @@ def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_
             continue
         
         # Get portfolio assignments for this city
-        city_portfolios = same_city_assignments['ASSIGNED_AU'].value_counts()
+        city_portfolios = same_city_assignments['ASSIGNED_AU'].value_counts().to_dict()
         
         # Assign to the most common portfolio in this city
-        most_common_au = city_portfolios.index[0]  # First index is the most frequent
+        most_common_au = max(city_portfolios.items(), key=lambda x: x[1])[0]
         
         # Calculate approximate distance (will be set to 0 since we don't have coordinates)
         city_assignments.append({
@@ -1244,51 +1244,47 @@ def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_
     print(f"Assigned {len(city_assignments)} customers by city matching")
     print(f"Leftover customers without coordinates: {len(leftover_customers)}")
     
-def assign_leftover_customers_to_existing_centralized(leftover_customers, result_df):
-    """
-    Assign leftover customers (without coordinates) to existing centralized portfolios
-    Distribute them evenly across existing centralized portfolios
-    """
-    if not leftover_customers:
-        print("No leftover customers to assign")
-        return []
-    
-    # Get existing centralized portfolios
-    centralized_portfolios = result_df[result_df['TYPE'] == 'CENTRALIZED']['ASSIGNED_AU'].unique()
-    
-    if len(centralized_portfolios) == 0:
-        print("Warning: No existing centralized portfolios found for leftover customers")
-        print("Leftover customers will remain unassigned")
-        return []
-    
-    # Get current sizes of centralized portfolios
-    centralized_sizes = result_df[result_df['TYPE'] == 'CENTRALIZED'].groupby('ASSIGNED_AU').size().to_dict()
-    
-    # Sort portfolios by current size (smallest first for even distribution)
-    sorted_portfolios = sorted(centralized_sizes.items(), key=lambda x: x[1])
-    
+    # Handle leftover customers by assigning to centralized portfolios
     leftover_assignments = []
-    portfolio_idx = 0
     
-    for customer in leftover_customers:
-        # Assign to next portfolio in rotation (round-robin)
-        au_to_assign = sorted_portfolios[portfolio_idx % len(sorted_portfolios)][0]
+    if leftover_customers:
+        # Get available branches for centralized assignment
+        available_branches = branch_df[~branch_df['BRANCH_AU'].isin(used_branches)].copy()
         
-        leftover_assignments.append({
-            'ECN': customer['ECN'],
-            'BILLINGCITY': customer['BILLINGCITY'],
-            'BILLINGSTATE': customer['BILLINGSTATE'],
-            'LAT_NUM': None,  # No coordinates available
-            'LON_NUM': None,  # No coordinates available
-            'ASSIGNED_AU': au_to_assign,
-            'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
-            'TYPE': 'CENTRALIZED'
-        })
-        
-        portfolio_idx += 1
-    
-    print(f"Assigned {len(leftover_assignments)} leftover customers to existing centralized portfolios")
-    return leftover_assignments
+        if len(available_branches) > 0:
+            # Split leftover customers into groups and assign to available branches
+            max_size = PORTFOLIO_CONFIG['MAX_SIZE']
+            
+            # Create groups
+            customer_groups = []
+            for i in range(0, len(leftover_customers), max_size):
+                group = leftover_customers[i:i + max_size]
+                customer_groups.append(group)
+            
+            # Assign each group to a different available branch
+            for group_idx, customer_group in enumerate(customer_groups):
+                if group_idx >= len(available_branches):
+                    # If we run out of branches, assign remaining to the last available branch
+                    branch_au = available_branches.iloc[-1]['BRANCH_AU']
+                else:
+                    branch_au = available_branches.iloc[group_idx]['BRANCH_AU']
+                
+                for customer in customer_group:
+                    leftover_assignments.append({
+                        'ECN': customer['ECN'],
+                        'BILLINGCITY': customer['BILLINGCITY'],
+                        'BILLINGSTATE': customer['BILLINGSTATE'],
+                        'LAT_NUM': None,  # No coordinates available
+                        'LON_NUM': None,  # No coordinates available
+                        'ASSIGNED_AU': branch_au,
+                        'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
+                        'TYPE': 'CENTRALIZED_NO_COORDS'
+                    })
+                
+                # Mark branch as used
+                used_branches.add(branch_au)
+            
+            print(f"Assigned {len(leftover_assignments)} leftover customers to centralized portfolios")
     
     # Combine all new assignments with existing results
     all_new_assignments = city_assignments + leftover_assignments
@@ -1524,19 +1520,9 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Step 11: Handle customers without coordinates
     print("Step 11: Handling customers without coordinates...")
-    try:
-        result_df, used_branches = assign_customers_without_coordinates_by_city(
-            result_df, customer_df, branch_df, used_branches
-        )
-        print("Successfully completed coordinate handling")
-    except Exception as e:
-        print(f"Error in coordinate handling: {e}")
-        print("Continuing without coordinate-based assignments...")
-        # Ensure we still have valid return values
-        if result_df is None:
-            result_df = pd.DataFrame()
-        if used_branches is None:
-            used_branches = set()
+    result_df, used_branches = assign_customers_without_coordinates_by_city(
+        result_df, customer_df, branch_df, used_branches
+    )
     
     # Update final_unassigned to be empty since we assigned everyone
     final_unassigned = []
@@ -1584,14 +1570,6 @@ def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
             non_coord_type_counts = non_coord_based['TYPE'].value_counts()
             for assignment_type, count in non_coord_type_counts.items():
                 print(f"  {assignment_type}: {count}")
-                
-            # Show which centralized portfolios received leftover customers
-            leftover_centralized = non_coord_based[non_coord_based['TYPE'] == 'CENTRALIZED']
-            if len(leftover_centralized) > 0:
-                leftover_portfolio_counts = leftover_centralized['ASSIGNED_AU'].value_counts()
-                print(f"  Leftover customers distributed across {len(leftover_portfolio_counts)} centralized portfolios:")
-                for au, count in leftover_portfolio_counts.head().items():
-                    print(f"    AU {au}: {count} customers")
         
         # Portfolio size distribution
         portfolio_sizes = result_df.groupby('ASSIGNED_AU').size()
@@ -1625,7 +1603,7 @@ def main():
     # branch_df = pd.read_csv('branch_data.csv')
     
     # Run the enhanced assignment
-    # assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
+    assignments = enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df)
     
     # Save results
     # assignments.to_csv('customer_au_assignments_with_coordinate_handling.csv', index=False)
