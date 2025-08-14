@@ -1238,7 +1238,7 @@ def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_
             'LON_NUM': None,  # No coordinates available
             'ASSIGNED_AU': most_common_au,
             'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
-            'TYPE': 'CENTRALIZED'
+            'TYPE': 'CITY_MATCH'
         })
     
     print(f"Assigned {len(city_assignments)} customers by city matching")
@@ -1278,7 +1278,7 @@ def assign_customers_without_coordinates_by_city(result_df, customer_df, branch_
                         'LON_NUM': None,  # No coordinates available
                         'ASSIGNED_AU': branch_au,
                         'DISTANCE_TO_AU': 0.0,  # Set to 0 since we can't calculate distance
-                        'TYPE': 'CENTRALIZED'
+                        'TYPE': 'CENTRALIZED_NO_COORDS'
                     })
                 
                 # Mark branch as used
