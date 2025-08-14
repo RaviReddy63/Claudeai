@@ -1076,7 +1076,13 @@ def fill_undersized_portfolios_from_unassigned(result_df, unassigned_customer_in
         max_radius = PORTFOLIO_CONFIG['FILL_SEARCH_RADIUS']
     
     if len(unassigned_customer_indices) == 0:
-        return result_df, unassigned_customer_indices
+        return result_df
+
+def enhanced_customer_au_assignment_with_unique_branches(customer_df, branch_df):
+    """
+    Enhanced main function ensuring each AU is assigned to only ONE cluster/portfolio
+    Uses centralized PORTFOLIO_CONFIG for all size constraints
+    """, unassigned_customer_indices
     
     # Work with a copy
     updated_result = result_df.copy()
